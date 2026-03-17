@@ -1,0 +1,117 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'REPO_URL',  defaultValue: '', description: 'Git clone URL of user app')
+        string(name: 'BRANCH',    defaultValue: 'main', description: 'Branch to build')
+        string(name: 'APP_NAME',  defaultValue: '', description: 'Unique app slug (e.g. my-nextjs-app)')
+        string(name: 'APP_PORT',  defaultValue: '3000', description: 'Port the app listens on')
+    }
+
+    environment {
+        REGISTRY       = credentials('registry-url')        // e.g. registry.yourplatform.com
+        GITOPS_REPO    = credentials('gitops-repo-url')     // e.g. git@github.com:yourorg/platform-gitops.git
+        IMAGE_FULL     = "${REGISTRY}/${APP_NAME}:${BUILD_NUMBER}"
+        SCRIPTS_DIR    = "${WORKSPACE}/platform-infra/jenkins/scripts"
+    }
+
+    stages {
+
+        stage('Checkout infra scripts') {
+            steps {
+                dir('platform-infra') {
+                    git url: ${${env.DB_ENGINE}},
+                    branch: 'main',
+                    credentialsId: 'infra-repo-creds'
+                }
+            }
+        }
+
+        stage('Checkout user app') {
+            steps {
+                dir('user-app') {
+                    git url: params.REPO_URL, branch: params.BRANCH
+                }
+            }
+        }
+
+        stage('Detect framework') {
+            steps {
+                dir('user-app') {
+                    script {
+                        env.FRAMEWORK = sh(
+                            script: "bash ${SCRIPTS_DIR}/detect-framework.sh",
+                            returnStdout: true
+                        ).trim()
+                        echo "Detected framework: ${env.FRAMEWORK}"
+                    }
+                }
+            }
+        }
+
+        stage('Generate Dockerfile') {
+            steps {
+                dir('user-app') {
+                    sh "bash ${SCRIPTS_DIR}/generate-dockerfile.sh ${env.FRAMEWORK} ${SCRIPTS_DIR}"
+                }
+            }
+        }
+
+        stage('Build app') {
+            steps {
+                dir('user-app') {
+                    sh "bash ${SCRIPTS_DIR}/build-app.sh ${env.FRAMEWORK}"
+                }
+            }
+        }
+
+        stage('Build & push image') {
+            steps {
+                dir('user-app') {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'registry-credentials',
+                        usernameVariable: 'REG_USER',
+                        passwordVariable: 'REG_PASS'
+                    )]) {
+                        sh """
+                            docker login ${REGISTRY} -u ${REG_USER} -p ${REG_PASS}
+                            docker build -t ${IMAGE_FULL} .
+                            docker push ${IMAGE_FULL}
+                            docker rmi ${IMAGE_FULL} || true
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Update GitOps') {
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'gitops-ssh',
+                    keyFileVariable: 'SSH_KEY'
+                )]) {
+                    sh """
+                        bash ${SCRIPTS_DIR}/update-gitops.sh \
+                            ${params.APP_NAME} \
+                            ${IMAGE_FULL} \
+                            ${params.APP_PORT} \
+                            ${GITOPS_REPO} \
+                            ${SSH_KEY}
+                    """
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Deploy pipeline complete. App will be live at https://${params.APP_NAME}.yourplatform.com"
+        }
+        failure {
+            echo "Pipeline failed for ${params.APP_NAME} — check logs above."
+        }
+        always {
+            cleanWs()
+        }
+    }
+}

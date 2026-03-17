@@ -1,0 +1,13 @@
+appName: my-app
+image: registry.yourplatform.com/my-app:latest
+port: 3000
+replicas: 1
+domain: yourplatform.com
+
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "512Mi"
+    cpu: "500m"
