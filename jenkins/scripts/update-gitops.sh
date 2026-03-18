@@ -6,6 +6,7 @@ IMAGE_TAG=$2
 APP_PORT=$3
 GITOPS_REPO=$4
 SSH_KEY=$5
+PLATFORM_DOMAIN=${6:-yourplatform.com}
 
 GITOPS_DIR="gitops-tmp-${APP_NAME}"
 
@@ -95,10 +96,10 @@ spec:
   ingressClassName: nginx
   tls:
     - hosts:
-        - ${APP_NAME}.yourplatform.com
+        - ${APP_NAME}.${PLATFORM_DOMAIN}
       secretName: ${APP_NAME}-tls
   rules:
-    - host: ${APP_NAME}.yourplatform.com
+    - host: ${APP_NAME}.${PLATFORM_DOMAIN}
       http:
         paths:
           - path: /

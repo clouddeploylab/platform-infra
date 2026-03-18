@@ -22,6 +22,8 @@ case "$FRAMEWORK" in
         cp "${TEMPLATES_DIR}/Dockerfile.gradle" Dockerfile ;;
     go)
         cp "${TEMPLATES_DIR}/Dockerfile.go" Dockerfile ;;
+    fastapi)
+        cp "${TEMPLATES_DIR}/Dockerfile.fastapi" Dockerfile ;;
     python)
         cp "${TEMPLATES_DIR}/Dockerfile.python" Dockerfile ;;
     static)

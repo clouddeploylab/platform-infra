@@ -25,9 +25,19 @@ case "$FRAMEWORK" in
         go mod download
         go build -o app ./...
         ;;
+    fastapi)
+        if [ -f requirements.txt ]; then
+            pip install -r requirements.txt --quiet
+        elif [ -f pyproject.toml ]; then
+            pip install . --quiet
+        fi
+        ;;
     python)
-        pip install -r requirements.txt --quiet 2>/dev/null || \
-        pip install -r pyproject.toml --quiet 2>/dev/null || true
+        if [ -f requirements.txt ]; then
+            pip install -r requirements.txt --quiet
+        elif [ -f pyproject.toml ]; then
+            pip install . --quiet
+        fi
         ;;
     static)
         echo "Static site — no build step needed."

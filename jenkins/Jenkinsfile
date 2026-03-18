@@ -2,28 +2,31 @@ pipeline {
     agent any
 
     parameters {
-        string(name: 'REPO_URL',  defaultValue: '', description: 'Git clone URL of user app')
-        string(name: 'BRANCH',    defaultValue: 'main', description: 'Branch to build')
-        string(name: 'APP_NAME',  defaultValue: '', description: 'Unique app slug (e.g. my-nextjs-app)')
-        string(name: 'APP_PORT',  defaultValue: '3000', description: 'Port the app listens on')
+        string(name: 'REPO_URL', defaultValue: '', description: 'Git clone URL of user app')
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Branch to build')
+        string(name: 'APP_NAME', defaultValue: '', description: 'Unique app slug (e.g. my-nextjs-app)')
+        string(name: 'APP_PORT', defaultValue: '3000', description: 'Port the app listens on')
+        string(name: 'PLATFORM_DOMAIN', defaultValue: 'yourplatform.com', description: 'Base domain for app ingress')
     }
 
     environment {
-        REGISTRY       = credentials('registry-url')        // e.g. registry.yourplatform.com
-        GITOPS_REPO    = credentials('gitops-repo-url')     // e.g. git@github.com:yourorg/platform-gitops.git
-        IMAGE_FULL     = "${REGISTRY}/${APP_NAME}:${BUILD_NUMBER}"
-        SCRIPTS_DIR    = "${WORKSPACE}/platform-infra/jenkins/scripts"
-        INFRA_REPO_URL = credentials('infra-repo-url')      // GitHub repo containing these scripts
+        // Secret text. Example for GitLab registry:
+        // registry.gitlab.example.com/my-group/my-project
+        REGISTRY_URL = credentials('registry-url')
+        // Secret text. Example: git@github.com:yourorg/platform-gitops.git
+        GITOPS_REPO = credentials('gitops-repo-url')
+        // Secret text. Example: https://github.com/yourorg/platform-infra.git
+        INFRA_REPO_URL = credentials('infra-repo-url')
+        SCRIPTS_DIR = "${WORKSPACE}/platform-infra/jenkins/scripts"
     }
 
     stages {
-
         stage('Checkout infra scripts') {
             steps {
                 dir('platform-infra') {
                     git url: "${INFRA_REPO_URL}",
-                    branch: 'main',
-                    credentialsId: 'infra-repo-creds'
+                        branch: 'main',
+                        credentialsId: 'infra-repo-creds'
                 }
             }
         }
@@ -74,11 +77,22 @@ pipeline {
                         usernameVariable: 'REG_USER',
                         passwordVariable: 'REG_PASS'
                     )]) {
+                        script {
+                            env.REGISTRY_IMAGE_PREFIX = sh(
+                                script: "echo '${REGISTRY_URL}' | sed -E 's#^https?://##'",
+                                returnStdout: true
+                            ).trim()
+                            env.REGISTRY_LOGIN_SERVER = sh(
+                                script: "echo '${REGISTRY_IMAGE_PREFIX}' | cut -d/ -f1",
+                                returnStdout: true
+                            ).trim()
+                            env.IMAGE_FULL = "${env.REGISTRY_IMAGE_PREFIX}/${params.APP_NAME}:${env.BUILD_NUMBER}"
+                        }
                         sh """
-                            docker login ${REGISTRY} -u ${REG_USER} -p ${REG_PASS}
-                            docker build -t ${IMAGE_FULL} .
-                            docker push ${IMAGE_FULL}
-                            docker rmi ${IMAGE_FULL} || true
+                            echo "${REG_PASS}" | docker login "${REGISTRY_LOGIN_SERVER}" -u "${REG_USER}" --password-stdin
+                            docker build -t "${IMAGE_FULL}" .
+                            docker push "${IMAGE_FULL}"
+                            docker rmi "${IMAGE_FULL}" || true
                         """
                     }
                 }
@@ -97,7 +111,8 @@ pipeline {
                             ${IMAGE_FULL} \
                             ${params.APP_PORT} \
                             ${GITOPS_REPO} \
-                            ${SSH_KEY}
+                            ${SSH_KEY} \
+                            ${params.PLATFORM_DOMAIN}
                     """
                 }
             }
@@ -106,7 +121,7 @@ pipeline {
 
     post {
         success {
-            echo "Deploy pipeline complete. App will be live at https://${params.APP_NAME}.yourplatform.com"
+            echo "Deploy pipeline complete. App will be live at https://${params.APP_NAME}.${params.PLATFORM_DOMAIN}"
         }
         failure {
             echo "Pipeline failed for ${params.APP_NAME} — check logs above."
