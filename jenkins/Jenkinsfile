@@ -13,6 +13,7 @@ pipeline {
         GITOPS_REPO    = credentials('gitops-repo-url')     // e.g. git@github.com:yourorg/platform-gitops.git
         IMAGE_FULL     = "${REGISTRY}/${APP_NAME}:${BUILD_NUMBER}"
         SCRIPTS_DIR    = "${WORKSPACE}/platform-infra/jenkins/scripts"
+        INFRA_REPO_URL = credentials('infra-repo-url')      // GitHub repo containing these scripts
     }
 
     stages {
@@ -20,7 +21,7 @@ pipeline {
         stage('Checkout infra scripts') {
             steps {
                 dir('platform-infra') {
-                    git url: ${${env.DB_ENGINE}},
+                    git url: "${INFRA_REPO_URL}",
                     branch: 'main',
                     credentialsId: 'infra-repo-creds'
                 }
