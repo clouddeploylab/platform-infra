@@ -1,4 +1,5 @@
-@Library('share_lib@master') _
+```groovy
+@Library('share_lib') _
 
 pipeline {
     agent any
@@ -159,86 +160,51 @@ pipeline {
             }
         }
 
-        stage('Build → Scan → Push') {
-            agent { label 'trivy' }
+        stage('Build image') {
             steps {
-                script {
-                    // Re-checkout infra (for scripts + helm chart)
-                    dir('platform-infra') {
-                        checkout([
-                            $class: 'GitSCM',
-                            branches: [[name: '*/main']],
-                            userRemoteConfigs: [[
-                                url: env.INFRA_REPO_URL,
-                                credentialsId: 'infra-repo-creds'
-                            ]]
-                        ])
-                    }
-
-                    // Re-checkout user app
-                    dir('user-app') {
-                        if (params.REPO_CREDENTIALS_ID?.trim()) {
-                            checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: "*/${params.BRANCH}"]],
-                                userRemoteConfigs: [[
-                                    url: env.NORMALIZED_REPO_URL,
-                                    credentialsId: params.REPO_CREDENTIALS_ID
-                                ]]
-                            ])
-                        } else {
-                            git url: env.NORMALIZED_REPO_URL, branch: params.BRANCH
-                        }
-                    }
-
-                    // Prepare Dockerfile (in case user didn't provide one)
-                    dir('user-app') {
-                        sh '''
-                            if [ -f Dockerfile ]; then
-                                echo "Using user-provided Dockerfile."
-                            else
-                                echo "Generating Dockerfile from platform template."
-                                bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
-                            fi
-                        '''
-                    }
-
-                    // Build
-                        dir('user-app') {
-                          sh 'docker build --pull -t "$IMAGE_FULL" .'
-                         }
-
-                // 2. Scan (conditional — but does NOT gate the push on its own)
-                if (params.ENABLE_TRIVY_SCAN) {
-                    trivyScan(
-                        fullImage: env.IMAGE_FULL,
-                        trivyPath: '/home/enz/trivy/docker-compose.yml',
-                        reportPath: '/home/enz/trivy/reports/trivy-report.json',
-                        gateSeverity: 'HIGH,CRITICAL'
-                    )
-                    uploadDefectDojo(
-                        defectdojoUrl: 'https://defectdojo.devith.it.com',
-                        defectdojoCredentialId: 'DEFECTDOJO',
-                        reportPath: '/home/enz/trivy/reports/trivy-report.json',
-                        productTypeName: 'Web Applications',
-                        productName: env.EFFECTIVE_PROJECT_NAME,
-                        engagementName: "Jenkins-${env.BUILD_NUMBER}",
-                        testTitle: "Trivy Image Scan - ${env.IMAGE_TAG}"
-                    )
+                dir('user-app') {
+                    sh '''
+                        docker build --pull -t "$IMAGE_FULL" .
+                    '''
                 }
+            }
+        }
 
-                // 3. Push — always runs after scan (scan failures call error() and stop execution)
+        stage('Push image') {
+            steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'registry-credentials',
                     usernameVariable: 'REGISTRY_USERNAME',
                     passwordVariable: 'REGISTRY_PASSWORD'
                 )]) {
                     sh '''
-                        echo "${REGISTRY_PASSWORD}" | docker login "${REGISTRY_LOGIN_SERVER}" \
-                            -u "${REGISTRY_USERNAME}" --password-stdin
+                        echo "${REGISTRY_PASSWORD}" | docker login "${REGISTRY_LOGIN_SERVER}" -u "${REGISTRY_USERNAME}" --password-stdin
                         docker push "${IMAGE_FULL}"
                     '''
-                    }
+                }
+            }
+        }
+
+        stage('Trivy + DefectDojo') {
+            when {
+                expression { return params.ENABLE_TRIVY_SCAN }
+            }
+            agent { label 'trivy' }
+            steps {
+                script {
+                    trivyDefectdojoSteps(
+                        fullImage: env.IMAGE_FULL,
+                        registryCredentialId: 'registry-credentials',
+                        trivyPath: '/home/enz/trivy/docker-compose.yml',
+                        reportPath: '/home/enz/trivy/reports/trivy-report.json',
+                        defectdojoUrl: 'https://defectdojo.devith.it.com',
+                        defectdojoCredentialId: 'DEFECTDOJO',
+                        productTypeName: 'Web Applications',
+                        productName: env.EFFECTIVE_PROJECT_NAME,
+                        engagementName: "Jenkins-${env.BUILD_NUMBER}",
+                        testTitle: "Trivy Image Scan - ${env.IMAGE_TAG}",
+                        gateSeverity: 'HIGH,CRITICAL'
+                    )
                 }
             }
         }
@@ -286,4 +252,4 @@ pipeline {
         }
     }
 }
-
+```
