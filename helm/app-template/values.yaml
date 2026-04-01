@@ -48,7 +48,7 @@ ingress:
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
   tls:
-    enabled: true
+    enabled: false
     secretName: ""
 
 imagePullSecrets:

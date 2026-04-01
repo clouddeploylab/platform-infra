@@ -86,6 +86,48 @@ replace_host_value() {
   mv "${values_file}.tmp" "${values_file}"
 }
 
+force_http_ingress() {
+  local values_file="$1"
+
+  if ! awk '
+    BEGIN { in_ingress = 0; in_tls = 0 }
+    {
+      line = $0
+
+      if (line ~ /^[[:space:]]*ingress:[[:space:]]*$/) {
+        in_ingress = 1
+        in_tls = 0
+        print line
+        next
+      }
+
+      if (in_ingress && line ~ /^[^[:space:]#][^:]*:[[:space:]]*$/) {
+        in_ingress = 0
+        in_tls = 0
+      }
+
+      if (in_ingress && line ~ /^[[:space:]]*tls:[[:space:]]*$/) {
+        in_tls = 1
+        print line
+        next
+      }
+
+      if (in_ingress && in_tls && line ~ /^[[:space:]]*enabled:[[:space:]]*(true|false)[[:space:]]*$/) {
+        sub(/enabled:[[:space:]]*(true|false)/, "enabled: false")
+        print line
+        next
+      }
+
+      print line
+    }
+  ' "${values_file}" > "${values_file}.tmp"; then
+    rm -f "${values_file}.tmp"
+    return 1
+  fi
+
+  mv "${values_file}.tmp" "${values_file}"
+}
+
 create_values_file() {
   local values_file="$1"
   local safe_workspace_id="$2"
@@ -158,7 +200,7 @@ ingress:
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
   tls:
-    enabled: true
+    enabled: false
     secretName: "${safe_project_name}-tls"
 
 imagePullSecrets:
@@ -421,6 +463,11 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
       exit 1
     }
   fi
+
+  force_http_ingress "${VALUES_FILE}" || {
+    echo "Unable to force HTTP ingress mode in ${VALUES_FILE}." >&2
+    exit 1
+  }
 
   COMMIT_MESSAGE="deploy(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
 
