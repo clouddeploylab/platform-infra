@@ -86,7 +86,7 @@ replace_host_value() {
   mv "${values_file}.tmp" "${values_file}"
 }
 
-force_http_ingress() {
+force_https_ingress() {
   local values_file="$1"
 
   if ! awk '
@@ -113,7 +113,7 @@ force_http_ingress() {
       }
 
       if (in_ingress && in_tls && line ~ /^[[:space:]]*enabled:[[:space:]]*(true|false)[[:space:]]*$/) {
-        sub(/enabled:[[:space:]]*(true|false)/, "enabled: false")
+        sub(/enabled:[[:space:]]*(true|false)/, "enabled: true")
         print line
         next
       }
@@ -200,7 +200,7 @@ ingress:
   annotations:
     cert-manager.io/cluster-issuer: "letsencrypt-prod"
   tls:
-    enabled: false
+    enabled: true
     secretName: "${safe_project_name}-tls"
 
 imagePullSecrets:
@@ -453,8 +453,8 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
 
   create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}"
 
-  force_http_ingress "${VALUES_FILE}" || {
-    echo "Unable to force HTTP ingress mode in ${VALUES_FILE}." >&2
+  force_https_ingress "${VALUES_FILE}" || {
+    echo "Unable to force HTTPS ingress mode in ${VALUES_FILE}." >&2
     exit 1
   }
 
