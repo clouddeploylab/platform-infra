@@ -7,6 +7,7 @@ Usage: update-gitops.sh \
   --gitops-repo <ssh-url> \
   --gitops-branch <branch> \
   --ssh-key <path> \
+  --workspace-id <workspace-id> \
   --user-id <user-id> \
   --project-name <project-name> \
   --image-repository <repository> \
@@ -172,6 +173,7 @@ commit_and_push() {
 GITOPS_REPO=""
 GITOPS_BRANCH="main"
 SSH_KEY=""
+WORKSPACE_ID=""
 USER_ID=""
 PROJECT_NAME=""
 IMAGE_REPOSITORY=""
@@ -195,6 +197,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ssh-key)
       SSH_KEY="$2"
+      shift 2
+      ;;
+    --workspace-id)
+      WORKSPACE_ID="$2"
       shift 2
       ;;
     --user-id)
@@ -262,6 +268,10 @@ if [[ ! -d "${CHART_SOURCE}" ]]; then
   exit 1
 fi
 
+if [[ -z "${WORKSPACE_ID}" ]]; then
+  WORKSPACE_ID="${USER_ID}"
+fi
+
 if [[ ! -f "${SSH_KEY}" ]]; then
   echo "SSH key file not found: ${SSH_KEY}" >&2
   echo "Verify Jenkins credential 'gitops-ssh' is configured as 'SSH Username with private key'." >&2
@@ -283,12 +293,10 @@ if [[ "${GITOPS_REPO}" =~ ^https://github\.com/([^/]+)/([^/]+?)(\.git)?/?$ ]]; t
   GITOPS_REPO="git@github.com:${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
 fi
 
+SAFE_WORKSPACE_ID="$(slugify "${WORKSPACE_ID}" 30)"
 SAFE_USER_ID="$(slugify "${USER_ID}" 30)"
 SAFE_PROJECT_NAME="$(slugify "${PROJECT_NAME}" 40)"
 NAMESPACE="user-${SAFE_USER_ID}"
-APP_ROOT="apps/${SAFE_USER_ID}/${SAFE_PROJECT_NAME}"
-USER_ROOT="apps/${SAFE_USER_ID}"
-NAMESPACE_FILE="${USER_ROOT}/namespace.yaml"
 
 export GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
 
@@ -308,6 +316,19 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
   git clone --branch "${GITOPS_BRANCH}" --depth 1 "${GITOPS_REPO}" "${WORK_DIR}/gitops" >/dev/null
 
   REPO_DIR="${WORK_DIR}/gitops"
+  LEGACY_APP_ROOT="apps/${SAFE_USER_ID}/${SAFE_PROJECT_NAME}"
+  NEW_APP_ROOT="apps/${SAFE_WORKSPACE_ID}/${SAFE_USER_ID}/${SAFE_PROJECT_NAME}"
+
+  if [[ -d "${REPO_DIR}/${LEGACY_APP_ROOT}" && ! -d "${REPO_DIR}/${NEW_APP_ROOT}" ]]; then
+    APP_ROOT="${LEGACY_APP_ROOT}"
+    USER_ROOT="apps/${SAFE_USER_ID}"
+    echo "[GitOps] Legacy layout detected, writing to ${APP_ROOT}"
+  else
+    APP_ROOT="${NEW_APP_ROOT}"
+    USER_ROOT="apps/${SAFE_WORKSPACE_ID}/${SAFE_USER_ID}"
+  fi
+
+  NAMESPACE_FILE="${USER_ROOT}/namespace.yaml"
   PROJECT_DIR="${REPO_DIR}/${APP_ROOT}"
   VALUES_FILE="${PROJECT_DIR}/values.yaml"
 

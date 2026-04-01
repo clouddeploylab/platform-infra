@@ -14,6 +14,7 @@ pipeline {
         string(name: 'REPO_URL', defaultValue: '', description: 'Git repository URL from user (GitHub/GitLab)')
         string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
         string(name: 'USER_ID', defaultValue: '', description: 'Tenant user id')
+        string(name: 'WORKSPACE_ID', defaultValue: '', description: 'Workspace id/slug for GitOps path partitioning')
         string(name: 'PROJECT_NAME', defaultValue: '', description: 'Project slug')
         string(name: 'APP_NAME', defaultValue: '', description: 'Legacy alias for PROJECT_NAME')
         string(name: 'APP_PORT', defaultValue: '3000', description: 'Container application port')
@@ -40,6 +41,10 @@ pipeline {
                     if (!params.USER_ID?.trim()) {
                         error('USER_ID is required')
                     }
+                    env.EFFECTIVE_WORKSPACE_ID = params.WORKSPACE_ID?.trim() ? params.WORKSPACE_ID.trim() : params.USER_ID.trim()
+                    if (!env.EFFECTIVE_WORKSPACE_ID) {
+                        error('WORKSPACE_ID is required (or falls back to USER_ID)')
+                    }
                     env.EFFECTIVE_PROJECT_NAME = params.PROJECT_NAME?.trim() ? params.PROJECT_NAME.trim() : params.APP_NAME?.trim()
                     if (!env.EFFECTIVE_PROJECT_NAME) {
                         error('PROJECT_NAME (or APP_NAME) is required')
@@ -55,7 +60,7 @@ pipeline {
                         error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: harbor.devith.it.com/deployment-pipeline)')
                     }
 
-                    echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH}"
+                    echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID}"
                 }
             }
         }
@@ -104,6 +109,10 @@ pipeline {
                         env.APP_COMMIT_SHA = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
                         env.SAFE_USER_ID = sh(
                             script: '''echo "$USER_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
+                            returnStdout: true
+                        ).trim()
+                        env.SAFE_WORKSPACE_ID = sh(
+                            script: '''echo "$EFFECTIVE_WORKSPACE_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
                             returnStdout: true
                         ).trim()
                         env.SAFE_PROJECT_NAME = sh(
@@ -319,6 +328,7 @@ pipeline {
                           --gitops-repo "${GITOPS_REPO_URL}" \
                           --gitops-branch "${GITOPS_BRANCH}" \
                           --ssh-key "${SSH_KEY}" \
+                          --workspace-id "${EFFECTIVE_WORKSPACE_ID}" \
                           --user-id "${USER_ID}" \
                           --project-name "${EFFECTIVE_PROJECT_NAME}" \
                           --image-repository "${IMAGE_REPOSITORY}" \
