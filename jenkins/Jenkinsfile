@@ -15,6 +15,7 @@ pipeline {
         string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
         string(name: 'USER_ID', defaultValue: '', description: 'Tenant user id')
         string(name: 'WORKSPACE_ID', defaultValue: '', description: 'Workspace id/slug for GitOps path partitioning')
+        string(name: 'CUSTOM_DOMAIN', defaultValue: '', description: 'Optional custom host (example: app.example.com)')
         string(name: 'PROJECT_NAME', defaultValue: '', description: 'Project slug')
         string(name: 'APP_NAME', defaultValue: '', description: 'Legacy alias for PROJECT_NAME')
         string(name: 'APP_PORT', defaultValue: '3000', description: 'Container application port')
@@ -60,7 +61,7 @@ pipeline {
                         error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: harbor.devith.it.com/deployment-pipeline)')
                     }
 
-                    echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID}"
+                    echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID} | CUSTOM_DOMAIN=${params.CUSTOM_DOMAIN}"
                 }
             }
         }
@@ -331,6 +332,7 @@ pipeline {
                           --workspace-id "${EFFECTIVE_WORKSPACE_ID}" \
                           --user-id "${USER_ID}" \
                           --project-name "${EFFECTIVE_PROJECT_NAME}" \
+                          --custom-domain "${CUSTOM_DOMAIN}" \
                           --image-repository "${IMAGE_REPOSITORY}" \
                           --image-tag "${IMAGE_TAG}" \
                           --app-port "${APP_PORT}" \

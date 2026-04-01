@@ -10,6 +10,7 @@ Usage: update-gitops.sh \
   --workspace-id <workspace-id> \
   --user-id <user-id> \
   --project-name <project-name> \
+  --custom-domain <domain> \
   --image-repository <repository> \
   --image-tag <tag> \
   --app-port <port> \
@@ -55,16 +56,56 @@ replace_image_tag() {
   mv "${values_file}.tmp" "${values_file}"
 }
 
+replace_host_value() {
+  local values_file="$1"
+  local host_value="$2"
+
+  if ! awk -v host="${host_value}" '
+    BEGIN { updated = 0 }
+    /managed-by-jenkins-host/ && updated == 0 {
+      sub(/host:[[:space:]]*[^#]+/, "host: \"" host "\"")
+      updated = 1
+    }
+    { print }
+    END { if (updated == 0) exit 1 }
+  ' "${values_file}" > "${values_file}.tmp"; then
+    if ! awk -v host="${host_value}" '
+      BEGIN { updated = 0 }
+      /^[[:space:]]*host:[[:space:]]*/ && updated == 0 {
+        sub(/host:[[:space:]].*/, "host: \"" host "\"")
+        updated = 1
+      }
+      { print }
+      END { if (updated == 0) exit 1 }
+    ' "${values_file}" > "${values_file}.tmp"; then
+      rm -f "${values_file}.tmp"
+      return 1
+    fi
+  fi
+
+  mv "${values_file}.tmp" "${values_file}"
+}
+
 create_values_file() {
   local values_file="$1"
-  local safe_user_id="$2"
-  local safe_project_name="$3"
-  local namespace="$4"
-  local framework="$5"
-  local image_repository="$6"
-  local image_tag="$7"
-  local app_port="$8"
-  local domain="$9"
+  local safe_workspace_id="$2"
+  local safe_user_id="$3"
+  local safe_project_name="$4"
+  local namespace="$5"
+  local framework="$6"
+  local image_repository="$7"
+  local image_tag="$8"
+  local app_port="$9"
+  local domain="${10}"
+  local custom_domain="${11}"
+
+  local default_host_label
+  default_host_label="$(slugify "${safe_project_name}-${safe_workspace_id}" 63)"
+
+  local effective_host="${default_host_label}.${domain}"
+  if [[ -n "${custom_domain}" ]]; then
+    effective_host="${custom_domain}"
+  fi
 
   cat > "${values_file}" <<VALUES
 app:
@@ -76,7 +117,7 @@ app:
   containerPort: ${app_port}
   servicePort: 80
   domain: "${domain}"
-  host: "${safe_project_name}.${domain}"
+  host: "${effective_host}" # managed-by-jenkins-host
 
 image:
   repository: "${image_repository}"
@@ -184,6 +225,7 @@ FRAMEWORK=""
 COMMIT_SHA=""
 BUILD_NUMBER=""
 CHART_SOURCE=""
+CUSTOM_DOMAIN=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -209,6 +251,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --project-name)
       PROJECT_NAME="$2"
+      shift 2
+      ;;
+    --custom-domain)
+      CUSTOM_DOMAIN="$2"
       shift 2
       ;;
     --image-repository)
@@ -272,6 +318,24 @@ if [[ -z "${WORKSPACE_ID}" ]]; then
   WORKSPACE_ID="${USER_ID}"
 fi
 
+if [[ -n "${CUSTOM_DOMAIN}" ]]; then
+  CUSTOM_DOMAIN="$(echo "${CUSTOM_DOMAIN}" | tr '[:upper:]' '[:lower:]' | sed -E 's#^https?://##; s#/.*$##; s/^[[:space:]]+|[[:space:]]+$//g')"
+  if [[ -n "${CUSTOM_DOMAIN}" ]]; then
+    if [[ "${CUSTOM_DOMAIN}" == *":"* ]]; then
+      echo "Custom domain must not include a port: ${CUSTOM_DOMAIN}" >&2
+      exit 1
+    fi
+    if [[ "${CUSTOM_DOMAIN}" == \*.* ]]; then
+      echo "Wildcard custom domain is not supported: ${CUSTOM_DOMAIN}" >&2
+      exit 1
+    fi
+    if [[ ! "${CUSTOM_DOMAIN}" =~ ^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$ ]]; then
+      echo "Invalid custom domain format: ${CUSTOM_DOMAIN}" >&2
+      exit 1
+    fi
+  fi
+fi
+
 if [[ ! -f "${SSH_KEY}" ]]; then
   echo "SSH key file not found: ${SSH_KEY}" >&2
   echo "Verify Jenkins credential 'gitops-ssh' is configured as 'SSH Username with private key'." >&2
@@ -297,6 +361,11 @@ SAFE_WORKSPACE_ID="$(slugify "${WORKSPACE_ID}" 30)"
 SAFE_USER_ID="$(slugify "${USER_ID}" 30)"
 SAFE_PROJECT_NAME="$(slugify "${PROJECT_NAME}" 40)"
 NAMESPACE="user-${SAFE_USER_ID}"
+DEFAULT_HOST_LABEL="$(slugify "${SAFE_PROJECT_NAME}-${SAFE_WORKSPACE_ID}" 63)"
+EFFECTIVE_HOST="${DEFAULT_HOST_LABEL}.${PLATFORM_DOMAIN}"
+if [[ -n "${CUSTOM_DOMAIN}" ]]; then
+  EFFECTIVE_HOST="${CUSTOM_DOMAIN}"
+fi
 
 export GIT_SSH_COMMAND="ssh -i ${SSH_KEY} -o IdentitiesOnly=yes -o StrictHostKeyChecking=no"
 
@@ -341,10 +410,14 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
   fi
 
   if [[ ! -f "${VALUES_FILE}" ]]; then
-    create_values_file "${VALUES_FILE}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}"
+    create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}"
   else
     replace_image_tag "${VALUES_FILE}" "${IMAGE_TAG}" || {
       echo "Unable to locate managed image tag marker in ${VALUES_FILE}." >&2
+      exit 1
+    }
+    replace_host_value "${VALUES_FILE}" "${EFFECTIVE_HOST}" || {
+      echo "Unable to update host value in ${VALUES_FILE}." >&2
       exit 1
     }
   fi
