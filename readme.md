@@ -6,6 +6,7 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 
 - Single generic Jenkins pipeline for all frameworks
 - Automatic framework detection and Dockerfile fallback templates
+- Spring Boot Docker templates auto-detect the Java version from the app build files
 - Docker image build/push with immutable version tag format:
   - `<userId>-<buildNumber>-<commitSHA>`
 - GitOps update script that writes to:
