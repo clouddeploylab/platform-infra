@@ -5,17 +5,12 @@ FRAMEWORK="${1:-static}"
 SCRIPTS_DIR="${2:-$(pwd)}"
 TEMPLATES_DIR="${SCRIPTS_DIR}/../../docker/dockerfiles"
 
-if [[ -f Dockerfile ]]; then
-  echo "User-provided Dockerfile detected. Skipping template generation."
-  exit 0
-fi
-
 template_for_framework() {
   case "$1" in
     nextjs) echo "Dockerfile.nextjs" ;;
     react) echo "Dockerfile.react" ;;
     nodejs) echo "Dockerfile.nodejs" ;;
-    springboot-maven|java-maven|springboot) echo "Dockerfile.springboot" ;;
+    springboot-maven|java-maven|springboot) echo "Dockerfile.maven" ;;
     springboot-gradle|java-gradle|gradle) echo "Dockerfile.gradle" ;;
     fastapi) echo "Dockerfile.fastapi" ;;
     flask) echo "Dockerfile.flask" ;;
@@ -75,13 +70,23 @@ detect_java_version() {
 
 SELECTED_TEMPLATE="$(template_for_framework "${FRAMEWORK}")"
 SOURCE_FILE="${TEMPLATES_DIR}/${SELECTED_TEMPLATE}"
+FORCE_PLATFORM_DOCKERFILE="${FORCE_PLATFORM_DOCKERFILE:-false}"
 
 if [[ ! -f "${SOURCE_FILE}" ]]; then
   echo "Template ${SELECTED_TEMPLATE} was not found. Falling back to Dockerfile.static."
   SOURCE_FILE="${TEMPLATES_DIR}/Dockerfile.static"
 fi
 
-if [[ "${SELECTED_TEMPLATE}" == "Dockerfile.gradle" || "${SELECTED_TEMPLATE}" == "Dockerfile.springboot" ]]; then
+if [[ -f Dockerfile && "${FORCE_PLATFORM_DOCKERFILE}" != "true" ]]; then
+  echo "User-provided Dockerfile detected. Skipping template generation."
+  exit 0
+fi
+
+if [[ -f Dockerfile && "${FORCE_PLATFORM_DOCKERFILE}" == "true" ]]; then
+  echo "Overwriting existing Dockerfile with platform template for ${FRAMEWORK}."
+fi
+
+if [[ "${SELECTED_TEMPLATE}" == "Dockerfile.gradle" || "${SELECTED_TEMPLATE}" == "Dockerfile.maven" ]]; then
   JAVA_VERSION="$(detect_java_version)"
   echo "Detected Java version: ${JAVA_VERSION}"
   sed "s/__JAVA_VERSION__/${JAVA_VERSION}/g" "${SOURCE_FILE}" > Dockerfile

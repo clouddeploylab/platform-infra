@@ -12,6 +12,9 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 - GitOps update script that writes to:
   - `apps/<userId>/<projectName>/`
 - Helm templates for Deployment, Service, Ingress, and HPA
+- Platform-managed Java Docker templates:
+  - `Dockerfile.gradle`
+  - `Dockerfile.maven`
 - Conflict-safe GitOps pushes with retry logic
 
 ## Supported frameworks

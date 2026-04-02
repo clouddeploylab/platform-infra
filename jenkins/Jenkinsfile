@@ -186,12 +186,20 @@ pipeline {
                             exit 1
                         fi
 
-                        if [ -f Dockerfile ]; then
-                            echo "Using user-provided Dockerfile."
-                        else
-                            echo "Generating Dockerfile from platform template."
-                            bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
-                        fi
+                        case "$FRAMEWORK" in
+                          springboot-*)
+                            echo "Using platform-managed Spring Boot Dockerfile template."
+                            FORCE_PLATFORM_DOCKERFILE=true bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
+                            ;;
+                          *)
+                            if [ -f Dockerfile ]; then
+                                echo "Using user-provided Dockerfile."
+                            else
+                                echo "Generating Dockerfile from platform template."
+                                bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
+                            fi
+                            ;;
+                        esac
                     '''
                 }
             }
@@ -245,12 +253,20 @@ pipeline {
                                 exit 1
                             fi
 
-                            if [ -f Dockerfile ]; then
-                                echo "Using user-provided Dockerfile."
-                            else
-                                echo "Generating Dockerfile from platform template."
-                                bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
-                            fi
+                            case "$FRAMEWORK" in
+                              springboot-*)
+                                echo "Using platform-managed Spring Boot Dockerfile template."
+                                FORCE_PLATFORM_DOCKERFILE=true bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
+                                ;;
+                              *)
+                                if [ -f Dockerfile ]; then
+                                    echo "Using user-provided Dockerfile."
+                                else
+                                    echo "Generating Dockerfile from platform template."
+                                    bash "${SCRIPTS_DIR}/generate-dockerfile.sh" "${FRAMEWORK}" "${SCRIPTS_DIR}"
+                                fi
+                                ;;
+                            esac
                         '''
                     }
 
