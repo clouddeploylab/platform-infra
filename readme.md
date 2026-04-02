@@ -13,6 +13,9 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
   - `springboot-*` / `java-*` -> `8080`
   - `fastapi` / `flask` / `python` -> `8000`
   - `APP_PORT` still works as an explicit override when you need a custom port
+- App health checks are framework-aware too:
+  - Spring Boot and Java apps use TCP startup/readiness/liveness probes
+  - Web and API apps keep HTTP probes on `/`
 - Docker image build/push with immutable version tag format:
   - `<userId>-<buildNumber>-<commitSHA>`
 - GitOps update script that writes to:

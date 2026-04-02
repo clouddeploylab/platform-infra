@@ -19,6 +19,7 @@ spec:
         platform.devops/user-id: {{ .Values.app.userId | quote }}
         platform.devops/project-name: {{ .Values.app.projectName | quote }}
     spec:
+      {{- $probeMode := default "http" .Values.probes.mode }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
@@ -36,21 +37,47 @@ spec:
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
+          {{- if and .Values.probes .Values.probes.startup .Values.probes.startup.enabled }}
+          startupProbe:
+            {{- if eq $probeMode "tcp" }}
+            tcpSocket:
+              port: http
+            {{- else }}
+            httpGet:
+              path: {{ .Values.probes.startup.path }}
+              port: http
+            {{- end }}
+            initialDelaySeconds: {{ .Values.probes.startup.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.startup.periodSeconds }}
+            failureThreshold: {{ .Values.probes.startup.failureThreshold }}
+          {{- end }}
           {{- if and .Values.probes .Values.probes.readiness .Values.probes.readiness.enabled }}
           readinessProbe:
+            {{- if eq $probeMode "tcp" }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.readiness.path }}
               port: http
+            {{- end }}
             initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
           {{- end }}
           {{- if and .Values.probes .Values.probes.liveness .Values.probes.liveness.enabled }}
           livenessProbe:
+            {{- if eq $probeMode "tcp" }}
+            tcpSocket:
+              port: http
+            {{- else }}
             httpGet:
               path: {{ .Values.probes.liveness.path }}
               port: http
+            {{- end }}
             initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
             periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
           {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

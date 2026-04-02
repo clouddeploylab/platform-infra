@@ -58,6 +58,32 @@ default_container_port_for_framework() {
   esac
 }
 
+probe_mode_for_framework() {
+  local framework="$1"
+
+  case "${framework}" in
+    springboot-maven|springboot-gradle|java-maven|java-gradle)
+      echo "tcp"
+      ;;
+    *)
+      echo "http"
+      ;;
+  esac
+}
+
+startup_probe_enabled_for_framework() {
+  local framework="$1"
+
+  case "${framework}" in
+    springboot-maven|springboot-gradle|java-maven|java-gradle)
+      echo "true"
+      ;;
+    *)
+      echo "false"
+      ;;
+  esac
+}
+
 resolve_container_port() {
   local framework="$1"
   local requested_port="$2"
@@ -178,10 +204,14 @@ create_values_file() {
   local domain="${10}"
   local custom_domain="${11}"
   local effective_app_port
+  local probe_mode
+  local startup_probe_enabled
 
   local default_host_label
   default_host_label="$(slugify "${safe_project_name}-${safe_workspace_id}" 63)"
   effective_app_port="$(resolve_container_port "${framework}" "${app_port}")"
+  probe_mode="$(probe_mode_for_framework "${framework}")"
+  startup_probe_enabled="$(startup_probe_enabled_for_framework "${framework}")"
 
   local effective_host="${default_host_label}.${domain}"
   if [[ -n "${custom_domain}" ]]; then
@@ -244,6 +274,26 @@ ingress:
 
 imagePullSecrets:
   - name: "registry-secret"
+
+probes:
+  mode: "${probe_mode}"
+  startup:
+    enabled: ${startup_probe_enabled}
+    initialDelaySeconds: 0
+    periodSeconds: 5
+    failureThreshold: 24
+  readiness:
+    enabled: true
+    path: "/"
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    failureThreshold: 3
+  liveness:
+    enabled: true
+    path: "/"
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    failureThreshold: 3
 VALUES
 }
 
