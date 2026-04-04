@@ -20,6 +20,7 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
   - `<userId>-<buildNumber>-<commitSHA>`
 - GitOps update script that writes to:
   - `apps/<userId>/<projectName>/`
+  - runtime env vars are passed as `ENV_JSON` and written into the generated Helm values
 - Helm templates for Deployment, Service, Ingress, and HPA
 - Platform-managed Java Docker templates:
   - `Dockerfile.gradle`
@@ -59,6 +60,7 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 - `USER_ID`
 - `PROJECT_NAME`
 - `APP_PORT`
+- `ENV_JSON` (optional JSON array of runtime env vars, manual form or `.env` import)
 - `PLATFORM_DOMAIN`
 - `GITOPS_BRANCH`
 - `REPO_CREDENTIALS_ID` (optional)

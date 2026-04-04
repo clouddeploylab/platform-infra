@@ -19,11 +19,15 @@ pipeline {
         string(name: 'PROJECT_NAME', defaultValue: '', description: 'Project slug')
         string(name: 'APP_NAME', defaultValue: '', description: 'Legacy alias for PROJECT_NAME')
         string(name: 'APP_PORT', defaultValue: '3000', description: 'Container application port')
+        string(name: 'ENV_JSON', defaultValue: '[]', description: 'JSON array of environment variables to write into GitOps')
+        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Optional image tag provided by backend (deploy or rollback)')
+        string(name: 'FRAMEWORK', defaultValue: '', description: 'Optional framework override provided by backend')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
         booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: true, description: 'Run local Trivy image scan')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository after push')
+        booleanParam(name: 'ROLLBACK_MODE', defaultValue: false, description: 'Skip build/scan/push and update GitOps with a saved image tag')
     }
 
     environment {
@@ -53,6 +57,14 @@ pipeline {
                     if (!(params.APP_PORT ==~ /^\d+$/)) {
                         error('APP_PORT must be numeric')
                     }
+                    if (params.ROLLBACK_MODE) {
+                        if (!params.FRAMEWORK?.trim()) {
+                            error('FRAMEWORK is required in rollback mode')
+                        }
+                        if (!params.IMAGE_TAG?.trim()) {
+                            error('IMAGE_TAG is required in rollback mode')
+                        }
+                    }
 
                     def normalizedRegistry = (env.REGISTRY_REPOSITORY ?: '')
                         .replaceFirst(/^https?:\/\//, '')
@@ -62,6 +74,43 @@ pipeline {
                     }
 
                     echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID} | CUSTOM_DOMAIN=${params.CUSTOM_DOMAIN}"
+
+                    env.SAFE_USER_ID = sh(
+                        script: '''echo "$USER_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
+                        returnStdout: true
+                    ).trim()
+                    env.SAFE_WORKSPACE_ID = sh(
+                        script: '''echo "$EFFECTIVE_WORKSPACE_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
+                        returnStdout: true
+                    ).trim()
+                    env.SAFE_PROJECT_NAME = sh(
+                        script: '''echo "$EFFECTIVE_PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-40''',
+                        returnStdout: true
+                    ).trim()
+
+                    env.NORMALIZED_REGISTRY_REPOSITORY = sh(
+                        script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##; s#/*$##' ''',
+                        returnStdout: true
+                    ).trim()
+
+                    env.REGISTRY_LOGIN_SERVER = sh(
+                        script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##' | cut -d/ -f1''',
+                        returnStdout: true
+                    ).trim()
+
+                    env.IMAGE_REPOSITORY = "${env.NORMALIZED_REGISTRY_REPOSITORY}/${env.SAFE_USER_ID}/${env.SAFE_PROJECT_NAME}"
+                    if (params.IMAGE_TAG?.trim()) {
+                        env.IMAGE_TAG = params.IMAGE_TAG.trim()
+                    }
+                    if (params.FRAMEWORK?.trim()) {
+                        env.FRAMEWORK = params.FRAMEWORK.trim()
+                    }
+                    if (env.IMAGE_TAG?.trim()) {
+                        env.IMAGE_FULL = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
+                    }
+                    if (params.ROLLBACK_MODE) {
+                        env.APP_COMMIT_SHA = "rollback-${env.IMAGE_TAG}"
+                    }
                 }
             }
         }
@@ -82,6 +131,9 @@ pipeline {
         }
 
         stage('Checkout user repository') {
+            when {
+                expression { return !params.ROLLBACK_MODE }
+            }
             steps {
                 dir('user-app') {
                     script {
@@ -108,31 +160,10 @@ pipeline {
                         }
 
                         env.APP_COMMIT_SHA = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
-                        env.SAFE_USER_ID = sh(
-                            script: '''echo "$USER_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
-                            returnStdout: true
-                        ).trim()
-                        env.SAFE_WORKSPACE_ID = sh(
-                            script: '''echo "$EFFECTIVE_WORKSPACE_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
-                            returnStdout: true
-                        ).trim()
-                        env.SAFE_PROJECT_NAME = sh(
-                            script: '''echo "$EFFECTIVE_PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-40''',
-                            returnStdout: true
-                        ).trim()
-
-                        env.NORMALIZED_REGISTRY_REPOSITORY = sh(
-                            script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##; s#/*$##' ''',
-                            returnStdout: true
-                        ).trim()
-
-                        env.IMAGE_TAG = "${env.SAFE_USER_ID}-${env.BUILD_NUMBER}-${env.APP_COMMIT_SHA}"
-                        env.IMAGE_REPOSITORY = "${env.NORMALIZED_REGISTRY_REPOSITORY}/${env.SAFE_USER_ID}/${env.SAFE_PROJECT_NAME}"
+                        if (!env.IMAGE_TAG?.trim()) {
+                            env.IMAGE_TAG = "${env.SAFE_USER_ID}-${env.BUILD_NUMBER}-${env.APP_COMMIT_SHA}"
+                        }
                         env.IMAGE_FULL = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
-                        env.REGISTRY_LOGIN_SERVER = sh(
-                            script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##' | cut -d/ -f1''',
-                            returnStdout: true
-                        ).trim()
 
                         echo "Resolved image tag: ${env.IMAGE_TAG}"
                     }
@@ -141,6 +172,9 @@ pipeline {
         }
 
         stage('Detect framework') {
+            when {
+                expression { return !params.ROLLBACK_MODE }
+            }
             steps {
                 dir('user-app') {
                     script {
@@ -170,6 +204,9 @@ pipeline {
         }
 
         stage('Prepare Dockerfile') {
+            when {
+                expression { return !params.ROLLBACK_MODE }
+            }
             steps {
                 dir('user-app') {
                     sh '''
@@ -206,6 +243,9 @@ pipeline {
         }
 
         stage('Build → Scan → Push') {
+            when {
+                expression { return !params.ROLLBACK_MODE }
+            }
             agent { label 'trivy' }
             steps {
                 script {
@@ -341,14 +381,21 @@ pipeline {
                             exit 1
                         fi
 
+                        OPERATION="deploy"
+                        if [ "${ROLLBACK_MODE}" = "true" ]; then
+                            OPERATION="rollback"
+                        fi
+
                         bash "${SCRIPTS_DIR}/update-gitops.sh" \
                           --gitops-repo "${GITOPS_REPO_URL}" \
                           --gitops-branch "${GITOPS_BRANCH}" \
                           --ssh-key "${SSH_KEY}" \
+                          --operation "${OPERATION}" \
                           --workspace-id "${EFFECTIVE_WORKSPACE_ID}" \
                           --user-id "${USER_ID}" \
                           --project-name "${EFFECTIVE_PROJECT_NAME}" \
                           --custom-domain "${CUSTOM_DOMAIN}" \
+                          --env-json "${ENV_JSON}" \
                           --image-repository "${IMAGE_REPOSITORY}" \
                           --image-tag "${IMAGE_TAG}" \
                           --app-port "${APP_PORT}" \

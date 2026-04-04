@@ -20,6 +20,11 @@ spec:
         platform.devops/project-name: {{ .Values.app.projectName | quote }}
     spec:
       {{- $probeMode := default "http" .Values.probes.mode }}
+      {{- $envJson := trim (default "" .Values.envJson) }}
+      {{- $envVars := .Values.env | default (list) }}
+      {{- if $envJson }}
+      {{- $envVars = fromJson $envJson }}
+      {{- end }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
@@ -31,9 +36,9 @@ spec:
           ports:
             - containerPort: {{ .Values.app.containerPort }}
               name: http
-          {{- if .Values.env }}
+          {{- if $envVars }}
           env:
-            {{- toYaml .Values.env | nindent 12 }}
+            {{- toYaml $envVars | nindent 12 }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

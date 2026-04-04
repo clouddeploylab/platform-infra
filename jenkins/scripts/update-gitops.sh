@@ -7,10 +7,12 @@ Usage: update-gitops.sh \
   --gitops-repo <ssh-url> \
   --gitops-branch <branch> \
   --ssh-key <path> \
+  --operation <deploy|rollback> \
   --workspace-id <workspace-id> \
   --user-id <user-id> \
   --project-name <project-name> \
   --custom-domain <domain> \
+  --env-json <json> \
   --image-repository <repository> \
   --image-tag <tag> \
   --app-port <port> \
@@ -84,6 +86,22 @@ startup_probe_enabled_for_framework() {
   esac
 }
 
+indent_block_scalar() {
+  local content="$1"
+  local indent="${2:-2}"
+  local prefix
+  prefix="$(printf '%*s' "${indent}" '')"
+
+  if [[ -z "${content}" ]]; then
+    echo "${prefix}[]"
+    return 0
+  fi
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    echo "${prefix}${line}"
+  done <<< "${content}"
+}
+
 resolve_container_port() {
   local framework="$1"
   local requested_port="$2"
@@ -97,56 +115,6 @@ resolve_container_port() {
   fi
 
   echo "${requested_port}"
-}
-
-replace_image_tag() {
-  local values_file="$1"
-  local image_tag="$2"
-
-  if ! awk -v tag="${image_tag}" '
-    BEGIN { updated = 0 }
-    /managed-by-jenkins-image-tag/ && updated == 0 {
-      sub(/tag:[[:space:]]*[^#]+/, "tag: \"" tag "\"")
-      updated = 1
-    }
-    { print }
-    END { if (updated == 0) exit 1 }
-  ' "${values_file}" > "${values_file}.tmp"; then
-    rm -f "${values_file}.tmp"
-    return 1
-  fi
-
-  mv "${values_file}.tmp" "${values_file}"
-}
-
-replace_host_value() {
-  local values_file="$1"
-  local host_value="$2"
-
-  if ! awk -v host="${host_value}" '
-    BEGIN { updated = 0 }
-    /managed-by-jenkins-host/ && updated == 0 {
-      sub(/host:[[:space:]]*[^#]+/, "host: \"" host "\"")
-      updated = 1
-    }
-    { print }
-    END { if (updated == 0) exit 1 }
-  ' "${values_file}" > "${values_file}.tmp"; then
-    if ! awk -v host="${host_value}" '
-      BEGIN { updated = 0 }
-      /^[[:space:]]*host:[[:space:]]*/ && updated == 0 {
-        sub(/host:[[:space:]].*/, "host: \"" host "\"")
-        updated = 1
-      }
-      { print }
-      END { if (updated == 0) exit 1 }
-    ' "${values_file}" > "${values_file}.tmp"; then
-      rm -f "${values_file}.tmp"
-      return 1
-    fi
-  fi
-
-  mv "${values_file}.tmp" "${values_file}"
 }
 
 force_https_ingress() {
@@ -203,6 +171,7 @@ create_values_file() {
   local app_port="$9"
   local domain="${10}"
   local custom_domain="${11}"
+  local env_json="${12}"
   local effective_app_port
   local probe_mode
   local startup_probe_enabled
@@ -216,6 +185,10 @@ create_values_file() {
   local effective_host="${default_host_label}.${domain}"
   if [[ -n "${custom_domain}" ]]; then
     effective_host="${custom_domain}"
+  fi
+
+  if [[ -z "${env_json}" ]]; then
+    env_json="[]"
   fi
 
   cat > "${values_file}" <<VALUES
@@ -274,6 +247,9 @@ ingress:
 
 imagePullSecrets:
   - name: "registry-secret"
+
+envJson: |
+$(indent_block_scalar "${env_json}" 2)
 
 probes:
   mode: "${probe_mode}"
@@ -345,6 +321,7 @@ commit_and_push() {
 GITOPS_REPO=""
 GITOPS_BRANCH="main"
 SSH_KEY=""
+OPERATION="deploy"
 WORKSPACE_ID=""
 USER_ID=""
 PROJECT_NAME=""
@@ -357,6 +334,7 @@ COMMIT_SHA=""
 BUILD_NUMBER=""
 CHART_SOURCE=""
 CUSTOM_DOMAIN=""
+ENV_JSON="[]"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -370,6 +348,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --ssh-key)
       SSH_KEY="$2"
+      shift 2
+      ;;
+    --operation)
+      OPERATION="$2"
       shift 2
       ;;
     --workspace-id)
@@ -386,6 +368,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --custom-domain)
       CUSTOM_DOMAIN="$2"
+      shift 2
+      ;;
+    --env-json)
+      ENV_JSON="$2"
       shift 2
       ;;
     --image-repository)
@@ -540,14 +526,18 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
     cp -R "${CHART_SOURCE}/." "${PROJECT_DIR}/"
   fi
 
-  create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}"
+  create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}" "${ENV_JSON}"
 
   force_https_ingress "${VALUES_FILE}" || {
     echo "Unable to force HTTPS ingress mode in ${VALUES_FILE}." >&2
     exit 1
   }
 
-  COMMIT_MESSAGE="deploy(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
+  if [[ "${OPERATION}" == "rollback" ]]; then
+    COMMIT_MESSAGE="rollback(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
+  else
+    COMMIT_MESSAGE="deploy(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
+  fi
 
   set +e
   commit_and_push "${REPO_DIR}" "${GITOPS_BRANCH}" "${APP_ROOT}" "${NAMESPACE_FILE}" "${COMMIT_MESSAGE}"

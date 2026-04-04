@@ -63,6 +63,7 @@ imagePullSecrets:
   - name: "registry-secret"
 
 env: []
+envJson: "[]"
 nodeSelector: {}
 tolerations: []
 affinity: {}
