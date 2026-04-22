@@ -224,18 +224,6 @@ autoscaling:
   maxReplicas: 4
   targetCPUUtilizationPercentage: 70
 
-probes:
-  readiness:
-    enabled: true
-    path: "/"
-    initialDelaySeconds: 10
-    periodSeconds: 10
-  liveness:
-    enabled: true
-    path: "/"
-    initialDelaySeconds: 30
-    periodSeconds: 15
-
 ingress:
   enabled: true
   className: "nginx"
@@ -255,6 +243,7 @@ probes:
   mode: "${probe_mode}"
   startup:
     enabled: ${startup_probe_enabled}
+    path: "/"
     initialDelaySeconds: 0
     periodSeconds: 5
     failureThreshold: 24
@@ -477,7 +466,11 @@ fi
 SAFE_WORKSPACE_ID="$(slugify "${WORKSPACE_ID}" 30)"
 SAFE_USER_ID="$(slugify "${USER_ID}" 30)"
 SAFE_PROJECT_NAME="$(slugify "${PROJECT_NAME}" 40)"
-NAMESPACE="user-${SAFE_USER_ID}"
+SAFE_WORKSPACE_NAMESPACE="$(slugify "${WORKSPACE_ID}" 63)"
+NAMESPACE="${SAFE_WORKSPACE_NAMESPACE}"
+if [[ -z "${NAMESPACE}" || "${NAMESPACE}" == "x" ]]; then
+  NAMESPACE="user-${SAFE_USER_ID}"
+fi
 DEFAULT_HOST_LABEL="$(slugify "${SAFE_PROJECT_NAME}-${SAFE_WORKSPACE_ID}" 63)"
 EFFECTIVE_HOST="${DEFAULT_HOST_LABEL}.${PLATFORM_DOMAIN}"
 if [[ -n "${CUSTOM_DOMAIN}" ]]; then

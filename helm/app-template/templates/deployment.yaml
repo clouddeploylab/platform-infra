@@ -23,7 +23,18 @@ spec:
       {{- $envJson := trim (default "" .Values.envJson) }}
       {{- $envVars := .Values.env | default (list) }}
       {{- if $envJson }}
+      {{- if hasPrefix "[" $envJson }}
+      {{- $envVars = fromJsonArray $envJson }}
+      {{- else }}
       {{- $envVars = fromJson $envJson }}
+      {{- end }}
+      {{- end }}
+      {{- if kindIs "map" $envVars }}
+      {{- $normalizedEnv := list }}
+      {{- range $name, $rawValue := $envVars }}
+      {{- $normalizedEnv = append $normalizedEnv (dict "name" (printf "%s" $name) "value" (printf "%v" $rawValue)) }}
+      {{- end }}
+      {{- $envVars = $normalizedEnv }}
       {{- end }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
