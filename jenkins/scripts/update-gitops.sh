@@ -4,6 +4,7 @@ set -euo pipefail
 usage() {
   cat <<USAGE
 Usage: update-gitops.sh \
+  --domain-only \
   --gitops-repo <ssh-url> \
   --gitops-branch <branch> \
   --ssh-key <path> \
@@ -150,6 +151,51 @@ force_https_ingress() {
       }
 
       print line
+    }
+  ' "${values_file}" > "${values_file}.tmp"; then
+    rm -f "${values_file}.tmp"
+    return 1
+  fi
+
+  mv "${values_file}.tmp" "${values_file}"
+}
+
+update_host_in_values_file() {
+  local values_file="$1"
+  local effective_host="$2"
+
+  if ! awk -v host="${effective_host}" '
+    BEGIN { in_app = 0; updated = 0 }
+    {
+      line = $0
+
+      if (line ~ /^[[:space:]]*app:[[:space:]]*$/) {
+        in_app = 1
+        print line
+        next
+      }
+
+      if (in_app && line ~ /^[^[:space:]#][^:]*:[[:space:]]*$/) {
+        in_app = 0
+      }
+
+      if (in_app && line ~ /^[[:space:]]*host:[[:space:]]*/) {
+        sub(/host:[[:space:]]*[^#]*/, "host: \"" host "\" ")
+        sub(/[[:space:]]+$/, "")
+        if (line !~ /managed-by-jenkins-host/) {
+          line = line " # managed-by-jenkins-host"
+        }
+        updated = 1
+        print line
+        next
+      }
+
+      print line
+    }
+    END {
+      if (updated == 0) {
+        exit 2
+      }
     }
   ' "${values_file}" > "${values_file}.tmp"; then
     rm -f "${values_file}.tmp"
@@ -324,6 +370,7 @@ BUILD_NUMBER=""
 CHART_SOURCE=""
 CUSTOM_DOMAIN=""
 ENV_JSON="[]"
+DOMAIN_ONLY="false"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -395,6 +442,10 @@ while [[ $# -gt 0 ]]; do
       CHART_SOURCE="$2"
       shift 2
       ;;
+    --domain-only)
+      DOMAIN_ONLY="true"
+      shift
+      ;;
     --help|-h)
       usage
       exit 0
@@ -407,17 +458,27 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-for required in GITOPS_REPO SSH_KEY USER_ID PROJECT_NAME IMAGE_REPOSITORY IMAGE_TAG APP_PORT PLATFORM_DOMAIN FRAMEWORK COMMIT_SHA BUILD_NUMBER CHART_SOURCE; do
-  if [[ -z "${!required}" ]]; then
-    echo "Missing required argument: ${required}" >&2
-    usage
+if [[ "${DOMAIN_ONLY}" == "true" ]]; then
+  for required in GITOPS_REPO SSH_KEY USER_ID PROJECT_NAME PLATFORM_DOMAIN; do
+    if [[ -z "${!required}" ]]; then
+      echo "Missing required argument: ${required}" >&2
+      usage
+      exit 1
+    fi
+  done
+else
+  for required in GITOPS_REPO SSH_KEY USER_ID PROJECT_NAME IMAGE_REPOSITORY IMAGE_TAG APP_PORT PLATFORM_DOMAIN FRAMEWORK COMMIT_SHA BUILD_NUMBER CHART_SOURCE; do
+    if [[ -z "${!required}" ]]; then
+      echo "Missing required argument: ${required}" >&2
+      usage
+      exit 1
+    fi
+  done
+
+  if [[ ! -d "${CHART_SOURCE}" ]]; then
+    echo "Chart source directory does not exist: ${CHART_SOURCE}" >&2
     exit 1
   fi
-done
-
-if [[ ! -d "${CHART_SOURCE}" ]]; then
-  echo "Chart source directory does not exist: ${CHART_SOURCE}" >&2
-  exit 1
 fi
 
 if [[ -z "${WORKSPACE_ID}" ]]; then
@@ -511,18 +572,33 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
 
   ensure_namespace_manifest "${REPO_DIR}/${USER_ROOT}" "${NAMESPACE}"
 
-  if [[ ! -f "${PROJECT_DIR}/Chart.yaml" ]]; then
-    cp -R "${CHART_SOURCE}/." "${PROJECT_DIR}/"
-  fi
+  if [[ "${DOMAIN_ONLY}" == "true" ]]; then
+    if [[ ! -f "${VALUES_FILE}" ]]; then
+      echo "Cannot apply domain-only update because values file does not exist yet: ${VALUES_FILE}" >&2
+      echo "Run a full deployment once before using domain-only updates." >&2
+      exit 1
+    fi
 
-  create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}" "${ENV_JSON}"
+    update_host_in_values_file "${VALUES_FILE}" "${EFFECTIVE_HOST}" || {
+      echo "Unable to update app.host in ${VALUES_FILE}." >&2
+      exit 1
+    }
+  else
+    if [[ ! -f "${PROJECT_DIR}/Chart.yaml" ]]; then
+      cp -R "${CHART_SOURCE}/." "${PROJECT_DIR}/"
+    fi
+
+    create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}" "${ENV_JSON}"
+  fi
 
   force_https_ingress "${VALUES_FILE}" || {
     echo "Unable to force HTTPS ingress mode in ${VALUES_FILE}." >&2
     exit 1
   }
 
-  if [[ "${OPERATION}" == "rollback" ]]; then
+  if [[ "${DOMAIN_ONLY}" == "true" ]]; then
+    COMMIT_MESSAGE="domain(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): host=${EFFECTIVE_HOST}"
+  elif [[ "${OPERATION}" == "rollback" ]]; then
     COMMIT_MESSAGE="rollback(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
   else
     COMMIT_MESSAGE="deploy(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"

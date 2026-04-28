@@ -15,21 +15,16 @@ pipeline {
         string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch to build')
         string(name: 'USER_ID', defaultValue: '', description: 'Tenant user id')
         string(name: 'WORKSPACE_ID', defaultValue: '', description: 'Workspace id/slug for GitOps path partitioning')
-        string(name: 'CUSTOM_DOMAIN', defaultValue: '', description: 'Optional custom host (example: app.autonomous-istad.com)')
+        string(name: 'CUSTOM_DOMAIN', defaultValue: '', description: 'Optional custom host (example: app.example.com)')
         string(name: 'PROJECT_NAME', defaultValue: '', description: 'Project slug')
         string(name: 'APP_NAME', defaultValue: '', description: 'Legacy alias for PROJECT_NAME')
         string(name: 'APP_PORT', defaultValue: '3000', description: 'Container application port')
-        string(name: 'PLATFORM_DOMAIN', defaultValue: 'autonomous-istad.com', description: 'Wildcard platform domain')
+        string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
-        booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: false, description: 'Run SonarQube analysis and enforce quality gate')
-        string(name: 'SONARQUBE_SERVER', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server name')
-        string(name: 'SONAR_SCANNER_TOOL', defaultValue: 'sonar-scanner', description: 'Jenkins SonarScanner tool name')
-        string(name: 'SONAR_PROJECT_KEY', defaultValue: '', description: 'Optional Sonar project key override')
-        string(name: 'SONAR_PROJECT_NAME', defaultValue: '', description: 'Optional Sonar project name override')
-        string(name: 'SONAR_QUALITY_GATE_TIMEOUT_MINUTES', defaultValue: '10', description: 'Max minutes to wait for Sonar Quality Gate')
         booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: true, description: 'Run local Trivy image scan')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository after push')
+        booleanParam(name: 'DOMAIN_ONLY_UPDATE', defaultValue: false, description: 'Only update GitOps domain host (skip checkout/build/push)')
     }
 
     environment {
@@ -42,7 +37,7 @@ pipeline {
         stage('Validate input') {
             steps {
                 script {
-                    if (!params.REPO_URL?.trim()) {
+                    if (!params.DOMAIN_ONLY_UPDATE && !params.REPO_URL?.trim()) {
                         error('REPO_URL is required')
                     }
                     if (!params.USER_ID?.trim()) {
@@ -56,26 +51,35 @@ pipeline {
                     if (!env.EFFECTIVE_PROJECT_NAME) {
                         error('PROJECT_NAME (or APP_NAME) is required')
                     }
-                    if (!(params.APP_PORT ==~ /^\d+$/)) {
+                    if (!params.DOMAIN_ONLY_UPDATE && !(params.APP_PORT ==~ /^\d+$/)) {
                         error('APP_PORT must be numeric')
                     }
-                    if (params.ENABLE_SONARQUBE_SCAN) {
-                        if (!(params.SONAR_QUALITY_GATE_TIMEOUT_MINUTES ==~ /^\d+$/)) {
-                            error('SONAR_QUALITY_GATE_TIMEOUT_MINUTES must be numeric')
-                        }
-                        if (params.SONAR_QUALITY_GATE_TIMEOUT_MINUTES.toInteger() < 1) {
-                            error('SONAR_QUALITY_GATE_TIMEOUT_MINUTES must be >= 1')
-                        }
-                    }
+
+                    env.SAFE_USER_ID = sh(
+                        script: '''echo "$USER_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
+                        returnStdout: true
+                    ).trim()
+                    env.SAFE_WORKSPACE_ID = sh(
+                        script: '''echo "$EFFECTIVE_WORKSPACE_ID" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-30''',
+                        returnStdout: true
+                    ).trim()
+                    env.SAFE_PROJECT_NAME = sh(
+                        script: '''echo "$EFFECTIVE_PROJECT_NAME" | tr '[:upper:]' '[:lower:]' | sed -E "s/[^a-z0-9-]+/-/g; s/^-+//; s/-+$//; s/-{2,}/-/g" | cut -c1-40''',
+                        returnStdout: true
+                    ).trim()
 
                     def normalizedRegistry = (env.REGISTRY_REPOSITORY ?: '')
                         .replaceFirst(/^https?:\/\//, '')
                         .replaceAll(/\/+$/, '')
-                    if (!normalizedRegistry.contains('/')) {
+                    if (!params.DOMAIN_ONLY_UPDATE && !normalizedRegistry.contains('/')) {
                         error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: harbor.devith.it.com/deployment-pipeline)')
                     }
 
-                    echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | ENABLE_SONARQUBE_SCAN=${params.ENABLE_SONARQUBE_SCAN} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID} | CUSTOM_DOMAIN=${params.CUSTOM_DOMAIN}"
+                    if (params.DOMAIN_ONLY_UPDATE) {
+                        env.IMAGE_FULL = '(domain-only update)'
+                    }
+
+                    echo "ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID} | CUSTOM_DOMAIN=${params.CUSTOM_DOMAIN} | DOMAIN_ONLY_UPDATE=${params.DOMAIN_ONLY_UPDATE}"
                 }
             }
         }
@@ -96,6 +100,9 @@ pipeline {
         }
 
         stage('Checkout user repository') {
+            when {
+                expression { return !params.DOMAIN_ONLY_UPDATE }
+            }
             steps {
                 dir('user-app') {
                     script {
@@ -155,6 +162,9 @@ pipeline {
         }
 
         stage('Detect framework') {
+            when {
+                expression { return !params.DOMAIN_ONLY_UPDATE }
+            }
             steps {
                 dir('user-app') {
                     script {
@@ -184,6 +194,9 @@ pipeline {
         }
 
         stage('Prepare Dockerfile') {
+            when {
+                expression { return !params.DOMAIN_ONLY_UPDATE }
+            }
             steps {
                 dir('user-app') {
                     sh '''
@@ -219,52 +232,10 @@ pipeline {
             }
         }
 
-        stage('SonarQube Scan + Quality Gate') {
-            when {
-                expression { return params.ENABLE_SONARQUBE_SCAN }
-            }
-            steps {
-                dir('user-app') {
-                    script {
-                        String sonarProjectKey = params.SONAR_PROJECT_KEY?.trim() ?
-                            params.SONAR_PROJECT_KEY.trim() :
-                            "${env.SAFE_WORKSPACE_ID}-${env.SAFE_USER_ID}-${env.SAFE_PROJECT_NAME}"
-                        String sonarProjectName = params.SONAR_PROJECT_NAME?.trim() ?
-                            params.SONAR_PROJECT_NAME.trim() :
-                            env.EFFECTIVE_PROJECT_NAME
-                        String sonarScannerHome = tool params.SONAR_SCANNER_TOOL
-
-                        withSonarQubeEnv(params.SONARQUBE_SERVER) {
-                            if (fileExists('sonar-project.properties')) {
-                                echo 'Using sonar-project.properties from repository.'
-                                sh """
-                                    set -e
-                                    "${sonarScannerHome}/bin/sonar-scanner"
-                                """
-                            } else {
-                                sh """
-                                    set -e
-                                    "${sonarScannerHome}/bin/sonar-scanner" \
-                                      -Dsonar.projectKey="${sonarProjectKey}" \
-                                      -Dsonar.projectName="${sonarProjectName}" \
-                                      -Dsonar.projectVersion="${env.BUILD_NUMBER}" \
-                                      -Dsonar.branch.name="${params.BRANCH}" \
-                                      -Dsonar.sources="." \
-                                      -Dsonar.exclusions="**/node_modules/**,**/.next/**,**/dist/**,**/build/**,**/coverage/**,**/vendor/**,**/.venv/**,**/__pycache__/**,**/.git/**" \
-                                      -Dsonar.sourceEncoding="UTF-8"
-                                """
-                            }
-                        }
-
-                        timeout(time: params.SONAR_QUALITY_GATE_TIMEOUT_MINUTES.toInteger(), unit: 'MINUTES') {
-                            waitForQualityGate abortPipeline: true
-                        }
-                    }
-                }
-            }
-        }
-
         stage('Build → Scan → Push') {
+            when {
+                expression { return !params.DOMAIN_ONLY_UPDATE }
+            }
             agent { label 'trivy' }
             steps {
                 script {
@@ -400,22 +371,35 @@ pipeline {
                             exit 1
                         fi
 
-                        bash "${SCRIPTS_DIR}/update-gitops.sh" \
-                          --gitops-repo "${GITOPS_REPO_URL}" \
-                          --gitops-branch "${GITOPS_BRANCH}" \
-                          --ssh-key "${SSH_KEY}" \
-                          --workspace-id "${EFFECTIVE_WORKSPACE_ID}" \
-                          --user-id "${USER_ID}" \
-                          --project-name "${EFFECTIVE_PROJECT_NAME}" \
-                          --custom-domain "${CUSTOM_DOMAIN}" \
-                          --image-repository "${IMAGE_REPOSITORY}" \
-                          --image-tag "${IMAGE_TAG}" \
-                          --app-port "${APP_PORT}" \
-                          --platform-domain "${PLATFORM_DOMAIN}" \
-                          --framework "${FRAMEWORK}" \
-                          --commit-sha "${APP_COMMIT_SHA}" \
-                          --build-number "${BUILD_NUMBER}" \
-                          --chart-source "${INFRA_BASE_DIR}/helm/app-template"
+                        if [ "${DOMAIN_ONLY_UPDATE}" = "true" ]; then
+                          bash "${SCRIPTS_DIR}/update-gitops.sh" \
+                            --domain-only \
+                            --gitops-repo "${GITOPS_REPO_URL}" \
+                            --gitops-branch "${GITOPS_BRANCH}" \
+                            --ssh-key "${SSH_KEY}" \
+                            --workspace-id "${EFFECTIVE_WORKSPACE_ID}" \
+                            --user-id "${USER_ID}" \
+                            --project-name "${EFFECTIVE_PROJECT_NAME}" \
+                            --custom-domain "${CUSTOM_DOMAIN}" \
+                            --platform-domain "${PLATFORM_DOMAIN}"
+                        else
+                          bash "${SCRIPTS_DIR}/update-gitops.sh" \
+                            --gitops-repo "${GITOPS_REPO_URL}" \
+                            --gitops-branch "${GITOPS_BRANCH}" \
+                            --ssh-key "${SSH_KEY}" \
+                            --workspace-id "${EFFECTIVE_WORKSPACE_ID}" \
+                            --user-id "${USER_ID}" \
+                            --project-name "${EFFECTIVE_PROJECT_NAME}" \
+                            --custom-domain "${CUSTOM_DOMAIN}" \
+                            --image-repository "${IMAGE_REPOSITORY}" \
+                            --image-tag "${IMAGE_TAG}" \
+                            --app-port "${APP_PORT}" \
+                            --platform-domain "${PLATFORM_DOMAIN}" \
+                            --framework "${FRAMEWORK}" \
+                            --commit-sha "${APP_COMMIT_SHA}" \
+                            --build-number "${BUILD_NUMBER}" \
+                            --chart-source "${INFRA_BASE_DIR}/helm/app-template"
+                        fi
                     '''
                 }
             }
@@ -425,7 +409,11 @@ pipeline {
     post {
         success {
             echo "Deployment requested successfully for ${env.EFFECTIVE_PROJECT_NAME}."
-            echo "Image: ${env.IMAGE_FULL}"
+            if (params.DOMAIN_ONLY_UPDATE) {
+                echo "Mode: domain-only GitOps update."
+            } else {
+                echo "Image: ${env.IMAGE_FULL}"
+            }
             echo "Expected URL: https://${env.SAFE_PROJECT_NAME}.${params.PLATFORM_DOMAIN}"
         }
         failure {

@@ -65,6 +65,9 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
   - default: `autonomous-istad.com`
 - `GITOPS_BRANCH`
 - `REPO_CREDENTIALS_ID` (optional)
+- `DOMAIN_ONLY_UPDATE` (optional, boolean)
+  - `true` means Jenkins skips checkout/build/push and only updates GitOps host/domain
+  - Use this for custom-domain changes after the first successful full deployment
 
 ## Local validation
 
