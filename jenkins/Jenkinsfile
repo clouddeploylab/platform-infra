@@ -1,4 +1,4 @@
-@Library('share_lib@master') _
+@Library(['share_lib@master', 'a8s-sonarqube@main']) _
 
 pipeline {
     agent any
@@ -22,6 +22,10 @@ pipeline {
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
+        string(name: 'SONARQUBE_SERVER_NAME', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server configuration name')
+        string(name: 'SONARQUBE_SCANNER_TOOL', defaultValue: '', description: 'Optional Jenkins SonarScanner tool name; empty uses sonar-scanner from PATH')
+        booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: true, description: 'Run SonarQube source analysis')
+        booleanParam(name: 'ENABLE_SONARQUBE_QUALITY_GATE', defaultValue: false, description: 'Wait for SonarQube quality gate before build')
         booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: true, description: 'Run local Trivy image scan')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository after push')
         booleanParam(name: 'DOMAIN_ONLY_UPDATE', defaultValue: false, description: 'Only update GitOps domain host (skip checkout/build/push)')
@@ -190,6 +194,40 @@ pipeline {
                         echo "Detected framework: ${env.FRAMEWORK}"
                     }
                 }
+            }
+        }
+
+        stage('SonarQube Analysis') {
+            when {
+                expression { return !params.DOMAIN_ONLY_UPDATE && params.ENABLE_SONARQUBE_SCAN }
+            }
+            steps {
+                dir('user-app') {
+                    script {
+                        a8sSonarScan(
+                            server: params.SONARQUBE_SERVER_NAME?.trim() ?: 'sonarqube',
+                            scannerTool: params.SONARQUBE_SCANNER_TOOL?.trim(),
+                            projectKey: "${env.SAFE_WORKSPACE_ID}-${env.SAFE_PROJECT_NAME}",
+                            projectName: env.EFFECTIVE_PROJECT_NAME,
+                            projectVersion: env.APP_COMMIT_SHA,
+                            sources: '.',
+                            exclusions: '**/node_modules/**,**/.next/**,**/dist/**,**/build/**,**/target/**,**/vendor/**,**/.git/**'
+                        )
+                    }
+                }
+            }
+        }
+
+        stage('SonarQube Quality Gate') {
+            when {
+                expression {
+                    return !params.DOMAIN_ONLY_UPDATE &&
+                        params.ENABLE_SONARQUBE_SCAN &&
+                        params.ENABLE_SONARQUBE_QUALITY_GATE
+                }
+            }
+            steps {
+                a8sSonarQualityGate(timeoutMinutes: 5, abortPipeline: true)
             }
         }
 
@@ -408,13 +446,18 @@ pipeline {
 
     post {
         success {
-            echo "Deployment requested successfully for ${env.EFFECTIVE_PROJECT_NAME}."
-            if (params.DOMAIN_ONLY_UPDATE) {
-                echo "Mode: domain-only GitOps update."
-            } else {
-                echo "Image: ${env.IMAGE_FULL}"
+            script {
+                echo "Deployment requested successfully for ${env.EFFECTIVE_PROJECT_NAME}."
+                if (params.DOMAIN_ONLY_UPDATE) {
+                    echo "Mode: domain-only GitOps update."
+                } else {
+                    echo "Image: ${env.IMAGE_FULL}"
+                }
+
+                String customDomain = params.CUSTOM_DOMAIN?.trim()
+                String expectedHost = customDomain ?: "${env.SAFE_PROJECT_NAME}-${env.SAFE_WORKSPACE_ID}.${params.PLATFORM_DOMAIN}"
+                echo "Expected URL: https://${expectedHost}"
             }
-            echo "Expected URL: https://${env.SAFE_PROJECT_NAME}.${params.PLATFORM_DOMAIN}"
         }
         failure {
             echo "Deployment failed. Check stage logs for details."
