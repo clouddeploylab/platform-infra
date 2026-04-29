@@ -9,7 +9,7 @@ Usage: update-gitops.sh \
   --gitops-branch <branch> \
   --ssh-key <path> \
   --operation <deploy|rollback> \
-  --workspace-id <workspace-id> \
+  --workspace-id <workspace-namespace> \
   --user-id <user-id> \
   --project-name <project-name> \
   --custom-domain <domain> \
@@ -205,6 +205,48 @@ update_host_in_values_file() {
   mv "${values_file}.tmp" "${values_file}"
 }
 
+update_namespace_in_values_file() {
+  local values_file="$1"
+  local namespace="$2"
+
+  if ! awk -v namespace="${namespace}" '
+    BEGIN { in_app = 0; updated = 0 }
+    {
+      line = $0
+
+      if (line ~ /^[[:space:]]*app:[[:space:]]*$/) {
+        in_app = 1
+        print line
+        next
+      }
+
+      if (in_app && line ~ /^[^[:space:]#][^:]*:[[:space:]]*$/) {
+        in_app = 0
+      }
+
+      if (in_app && line ~ /^[[:space:]]*namespace:[[:space:]]*/) {
+        sub(/namespace:[[:space:]]*[^#]*/, "namespace: \"" namespace "\" ")
+        sub(/[[:space:]]+$/, "")
+        updated = 1
+        print line
+        next
+      }
+
+      print line
+    }
+    END {
+      if (updated == 0) {
+        exit 2
+      }
+    }
+  ' "${values_file}" > "${values_file}.tmp"; then
+    rm -f "${values_file}.tmp"
+    return 1
+  fi
+
+  mv "${values_file}.tmp" "${values_file}"
+}
+
 create_values_file() {
   local values_file="$1"
   local safe_workspace_id="$2"
@@ -319,7 +361,7 @@ metadata:
   name: ${namespace}
   labels:
     app.kubernetes.io/managed-by: argocd
-    platform.devops/user-namespace: "true"
+    platform.devops/workspace-namespace: "true"
 NAMESPACE
 }
 
@@ -459,7 +501,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${DOMAIN_ONLY}" == "true" ]]; then
-  for required in GITOPS_REPO SSH_KEY USER_ID PROJECT_NAME PLATFORM_DOMAIN; do
+  for required in GITOPS_REPO SSH_KEY WORKSPACE_ID USER_ID PROJECT_NAME PLATFORM_DOMAIN; do
     if [[ -z "${!required}" ]]; then
       echo "Missing required argument: ${required}" >&2
       usage
@@ -467,7 +509,7 @@ if [[ "${DOMAIN_ONLY}" == "true" ]]; then
     fi
   done
 else
-  for required in GITOPS_REPO SSH_KEY USER_ID PROJECT_NAME IMAGE_REPOSITORY IMAGE_TAG APP_PORT PLATFORM_DOMAIN FRAMEWORK COMMIT_SHA BUILD_NUMBER CHART_SOURCE; do
+  for required in GITOPS_REPO SSH_KEY WORKSPACE_ID USER_ID PROJECT_NAME IMAGE_REPOSITORY IMAGE_TAG APP_PORT PLATFORM_DOMAIN FRAMEWORK COMMIT_SHA BUILD_NUMBER CHART_SOURCE; do
     if [[ -z "${!required}" ]]; then
       echo "Missing required argument: ${required}" >&2
       usage
@@ -479,10 +521,6 @@ else
     echo "Chart source directory does not exist: ${CHART_SOURCE}" >&2
     exit 1
   fi
-fi
-
-if [[ -z "${WORKSPACE_ID}" ]]; then
-  WORKSPACE_ID="${USER_ID}"
 fi
 
 if [[ -n "${CUSTOM_DOMAIN}" ]]; then
@@ -524,10 +562,11 @@ if [[ "${GITOPS_REPO}" =~ ^https://github\.com/([^/]+)/([^/]+?)(\.git)?/?$ ]]; t
   GITOPS_REPO="git@github.com:${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
 fi
 
-SAFE_WORKSPACE_ID="$(slugify "${WORKSPACE_ID}" 30)"
+SAFE_WORKSPACE_ID="$(slugify "${WORKSPACE_ID}" 63)"
 SAFE_USER_ID="$(slugify "${USER_ID}" 30)"
 SAFE_PROJECT_NAME="$(slugify "${PROJECT_NAME}" 40)"
-NAMESPACE="user-${SAFE_USER_ID}"
+# WORKSPACE_ID is the namespace created by backend onboarding, e.g. ns-username-1234abcd.
+NAMESPACE="${SAFE_WORKSPACE_ID}"
 DEFAULT_HOST_LABEL="$(slugify "${SAFE_PROJECT_NAME}-${SAFE_WORKSPACE_ID}" 63)"
 EFFECTIVE_HOST="${DEFAULT_HOST_LABEL}.${PLATFORM_DOMAIN}"
 if [[ -n "${CUSTOM_DOMAIN}" ]]; then
@@ -581,6 +620,10 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
 
     update_host_in_values_file "${VALUES_FILE}" "${EFFECTIVE_HOST}" || {
       echo "Unable to update app.host in ${VALUES_FILE}." >&2
+      exit 1
+    }
+    update_namespace_in_values_file "${VALUES_FILE}" "${NAMESPACE}" || {
+      echo "Unable to update app.namespace in ${VALUES_FILE}." >&2
       exit 1
     }
   else

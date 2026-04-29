@@ -2,7 +2,7 @@ app:
   name: "sample-app"
   userId: "123"
   projectName: "sample-app"
-  namespace: "user-123"
+  namespace: "ns-sample-user-1234abcd"
   framework: "nodejs"
   containerPort: 3000
   servicePort: 80
@@ -11,7 +11,7 @@ app:
 
 image:
   repository: "registry.example.com/platform/123/sample-app"
-  tag: "user-123-1-abcdef123456" # managed-by-jenkins-image-tag
+  tag: "123-1-abcdef123456" # managed-by-jenkins-image-tag
   pullPolicy: "IfNotPresent"
 
 replicaCount: 1
