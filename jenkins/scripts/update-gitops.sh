@@ -209,7 +209,7 @@ update_namespace_in_values_file() {
   local values_file="$1"
   local namespace="$2"
 
-  if ! awk -v namespace="${namespace}" '
+  if ! awk -v app_namespace="${namespace}" '
     BEGIN { in_app = 0; updated = 0 }
     {
       line = $0
@@ -225,7 +225,7 @@ update_namespace_in_values_file() {
       }
 
       if (in_app && line ~ /^[[:space:]]*namespace:[[:space:]]*/) {
-        sub(/namespace:[[:space:]]*[^#]*/, "namespace: \"" namespace "\" ")
+        sub(/namespace:[[:space:]]*[^#]*/, "namespace: \"" app_namespace "\" ")
         sub(/[[:space:]]+$/, "")
         updated = 1
         print line
