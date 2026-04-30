@@ -145,7 +145,7 @@ force_https_ingress() {
       }
 
       if (in_ingress && in_tls && line ~ /^[[:space:]]*enabled:[[:space:]]*(true|false)[[:space:]]*$/) {
-        sub(/enabled:[[:space:]]*(true|false)/, "enabled: true")
+        sub(/enabled:[[:space:]]*(true|false)/, "enabled: true", line)
         print line
         next
       }
@@ -180,8 +180,8 @@ update_host_in_values_file() {
       }
 
       if (in_app && line ~ /^[[:space:]]*host:[[:space:]]*/) {
-        sub(/host:[[:space:]]*[^#]*/, "host: \"" host "\" ")
-        sub(/[[:space:]]+$/, "")
+        sub(/host:[[:space:]]*[^#]*/, "host: \"" host "\" ", line)
+        sub(/[[:space:]]+$/, "", line)
         if (line !~ /managed-by-jenkins-host/) {
           line = line " # managed-by-jenkins-host"
         }
@@ -225,8 +225,8 @@ update_namespace_in_values_file() {
       }
 
       if (in_app && line ~ /^[[:space:]]*namespace:[[:space:]]*/) {
-        sub(/namespace:[[:space:]]*[^#]*/, "namespace: \"" app_namespace "\" ")
-        sub(/[[:space:]]+$/, "")
+        sub(/namespace:[[:space:]]*[^#]*/, "namespace: \"" app_namespace "\" ", line)
+        sub(/[[:space:]]+$/, "", line)
         updated = 1
         print line
         next
@@ -245,6 +245,35 @@ update_namespace_in_values_file() {
   fi
 
   mv "${values_file}.tmp" "${values_file}"
+}
+
+read_app_host_from_values_file() {
+  local values_file="$1"
+
+  awk '
+    BEGIN { in_app = 0 }
+    {
+      line = $0
+
+      if (line ~ /^[[:space:]]*app:[[:space:]]*$/) {
+        in_app = 1
+        next
+      }
+
+      if (in_app && line ~ /^[^[:space:]#][^:]*:[[:space:]]*$/) {
+        in_app = 0
+      }
+
+      if (in_app && line ~ /^[[:space:]]*host:[[:space:]]*/) {
+        sub(/^[[:space:]]*host:[[:space:]]*/, "", line)
+        sub(/[[:space:]]*#.*/, "", line)
+        gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+        gsub(/^"|"$/, "", line)
+        print line
+        exit
+      }
+    }
+  ' "${values_file}"
 }
 
 create_values_file() {
@@ -365,12 +394,29 @@ metadata:
 NAMESPACE
 }
 
+describe_gitops_repo() {
+  local repo="$1"
+
+  if [[ "${repo}" =~ ^git@github\.com:([^/]+)/(.+)$ ]]; then
+    echo "github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  if [[ "${repo}" =~ ^https://github\.com/([^/]+)/(.+)$ ]]; then
+    echo "github.com/${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"
+    return 0
+  fi
+
+  echo "${repo}" | sed -E 's#^https?://##; s#^git@##; s#:#/#; s#/*$##'
+}
+
 commit_and_push() {
   local repo_dir="$1"
   local branch="$2"
   local project_path="$3"
   local namespace_file="$4"
   local commit_message="$5"
+  local no_change_message="${6:-No GitOps changes required. Requested image tag already present.}"
 
   (
     cd "${repo_dir}"
@@ -380,7 +426,7 @@ commit_and_push() {
     git add "${project_path}" "${namespace_file}"
 
     if git diff --cached --quiet; then
-      echo "No GitOps changes required. Requested image tag already present."
+      echo "${no_change_message}"
       return 10
     fi
 
@@ -562,6 +608,8 @@ if [[ "${GITOPS_REPO}" =~ ^https://github\.com/([^/]+)/([^/]+?)(\.git)?/?$ ]]; t
   GITOPS_REPO="git@github.com:${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
 fi
 
+echo "[GitOps] Target repository: $(describe_gitops_repo "${GITOPS_REPO}") | branch=${GITOPS_BRANCH}"
+
 SAFE_WORKSPACE_ID="$(slugify "${WORKSPACE_ID}" 63)"
 SAFE_USER_ID="$(slugify "${USER_ID}" 30)"
 SAFE_PROJECT_NAME="$(slugify "${PROJECT_NAME}" 40)"
@@ -618,6 +666,9 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
       exit 1
     fi
 
+    CURRENT_HOST="$(read_app_host_from_values_file "${VALUES_FILE}")"
+    echo "[GitOps] Domain-only host update: current=${CURRENT_HOST:-<missing>} desired=${EFFECTIVE_HOST}"
+
     update_host_in_values_file "${VALUES_FILE}" "${EFFECTIVE_HOST}" || {
       echo "Unable to update app.host in ${VALUES_FILE}." >&2
       exit 1
@@ -626,6 +677,12 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
       echo "Unable to update app.namespace in ${VALUES_FILE}." >&2
       exit 1
     }
+
+    UPDATED_HOST="$(read_app_host_from_values_file "${VALUES_FILE}")"
+    if [[ "${UPDATED_HOST}" != "${EFFECTIVE_HOST}" ]]; then
+      echo "Domain-only update did not set expected host. current=${UPDATED_HOST:-<missing>} desired=${EFFECTIVE_HOST}" >&2
+      exit 1
+    fi
   else
     if [[ ! -f "${PROJECT_DIR}/Chart.yaml" ]]; then
       cp -R "${CHART_SOURCE}/." "${PROJECT_DIR}/"
@@ -641,14 +698,17 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
 
   if [[ "${DOMAIN_ONLY}" == "true" ]]; then
     COMMIT_MESSAGE="domain(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): host=${EFFECTIVE_HOST}"
+    NO_CHANGE_MESSAGE="No GitOps changes required. Domain host already set to ${EFFECTIVE_HOST}."
   elif [[ "${OPERATION}" == "rollback" ]]; then
     COMMIT_MESSAGE="rollback(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
+    NO_CHANGE_MESSAGE="No GitOps changes required. Requested image tag already present."
   else
     COMMIT_MESSAGE="deploy(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
+    NO_CHANGE_MESSAGE="No GitOps changes required. Requested image tag already present."
   fi
 
   set +e
-  commit_and_push "${REPO_DIR}" "${GITOPS_BRANCH}" "${APP_ROOT}" "${NAMESPACE_FILE}" "${COMMIT_MESSAGE}"
+  commit_and_push "${REPO_DIR}" "${GITOPS_BRANCH}" "${APP_ROOT}" "${NAMESPACE_FILE}" "${COMMIT_MESSAGE}" "${NO_CHANGE_MESSAGE}"
   RESULT=$?
   set -e
 
