@@ -38,7 +38,7 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 
 ## Static Tailwind/HTML projects
 
-Projects like `https://github.com/tochratana/Tailwind.git` are detected as `tailwind-static` when they have `package.json`, an HTML entrypoint, and Tailwind/Vite config or dependencies. The generated Dockerfile runs `npm ci` when a lockfile exists, falls back to `npm install` when it does not, runs `npm run build` when present, then serves `dist/`, `build/`, `public/`, or the root `index.html` with Nginx on port `80`.
+Projects like `https://github.com/tochratana/Tailwind.git` are detected as `tailwind-static` when they have `package.json`, an HTML entrypoint, and Tailwind/Vite config or dependencies. The generated Dockerfile runs `npm ci` when a lockfile exists, falls back to `npm install` when it does not, runs `npm run build` when present, compiles `src/input.css` when no build script exists, then serves `dist/`, `build/`, `public/`, `src/`, or the root `index.html` with Nginx on port `80`.
 
 ## Key files
 

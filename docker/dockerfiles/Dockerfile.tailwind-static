@@ -5,7 +5,14 @@ COPY package*.json ./
 RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . .
-RUN if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.build ? 0 : 1)"; then npm run build; else echo "No build script found; serving checked-in static files."; fi
+RUN if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.build ? 0 : 1)"; then \
+      npm run build; \
+    elif [ -f src/input.css ]; then \
+      echo "No build script found; compiling Tailwind from src/input.css."; \
+      npx tailwindcss -i ./src/input.css -o ./src/output.css --minify; \
+    else \
+      echo "No build script found; serving checked-in static files."; \
+    fi
 RUN set -eux; \
     mkdir -p /tmp/webroot; \
     if [ -f dist/index.html ]; then \
@@ -14,13 +21,15 @@ RUN set -eux; \
       cp -R build/. /tmp/webroot/; \
     elif [ -f public/index.html ]; then \
       cp -R public/. /tmp/webroot/; \
+    elif [ -f src/index.html ]; then \
+      cp -R src/. /tmp/webroot/; \
     elif [ -f index.html ]; then \
       cp -R . /tmp/webroot/; \
       rm -rf /tmp/webroot/node_modules /tmp/webroot/.git /tmp/webroot/.scannerwork; \
       rm -f /tmp/webroot/package.json /tmp/webroot/package-lock.json /tmp/webroot/pnpm-lock.yaml /tmp/webroot/yarn.lock; \
       rm -f /tmp/webroot/tailwind.config.* /tmp/webroot/postcss.config.*; \
     else \
-      echo "Static HTML entrypoint not found (expected dist/index.html, build/index.html, public/index.html, or index.html)." >&2; \
+      echo "Static HTML entrypoint not found (expected dist/index.html, build/index.html, public/index.html, src/index.html, or index.html)." >&2; \
       exit 1; \
     fi
 
