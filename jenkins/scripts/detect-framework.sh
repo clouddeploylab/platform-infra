@@ -21,6 +21,14 @@ has_dependency_in_package_json() {
   grep -Eiq "\"${package_name}\"[[:space:]]*:" package.json
 }
 
+has_static_entrypoint() {
+  [[ -f index.html || -f public/index.html || -f dist/index.html || -f src/index.html ]]
+}
+
+has_tailwind_config() {
+  [[ -f tailwind.config.js || -f tailwind.config.cjs || -f tailwind.config.mjs || -f tailwind.config.ts ]]
+}
+
 has_python_dependency() {
   local name="$1"
   if [[ -f requirements.txt ]] && grep -Eiq "(^|[[:space:]])${name}([<>=~!].*)?$" requirements.txt; then
@@ -39,6 +47,8 @@ if [[ -f package.json ]]; then
     echo "nextjs"
   elif has_dependency_in_package_json "react"; then
     echo "react"
+  elif has_static_entrypoint && { has_dependency_in_package_json "tailwindcss" || has_dependency_in_package_json "@tailwindcss/cli" || has_dependency_in_package_json "@tailwindcss/vite" || has_dependency_in_package_json "vite" || has_tailwind_config; }; then
+    echo "tailwind-static"
   else
     echo "nodejs"
   fi

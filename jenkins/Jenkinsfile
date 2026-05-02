@@ -109,6 +109,7 @@ pipeline {
             steps {
                 dir('user-app') {
                     script {
+                        deleteDir()
                         env.NORMALIZED_REPO_URL = params.REPO_URL
                         if (params.REPO_URL?.contains('%')) {
                             try {
@@ -289,6 +290,7 @@ pipeline {
 
                     // Re-checkout user app
                     dir('user-app') {
+                        deleteDir()
                         if (params.REPO_CREDENTIALS_ID?.trim()) {
                             checkout([
                                 $class: 'GitSCM',

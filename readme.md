@@ -9,7 +9,7 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 - Spring Boot Docker templates auto-detect the Java version from the app build files
 - App container ports are framework-aware:
   - `nextjs` / `nodejs` -> `3000`
-  - `react` / `laravel` / `php` / `static` -> `80`
+  - `react` / `laravel` / `php` / `static` / `tailwind-static` -> `80`
   - `springboot-*` / `java-*` -> `8080`
   - `fastapi` / `flask` / `python` -> `8000`
   - `APP_PORT` still works as an explicit override when you need a custom port
@@ -30,10 +30,15 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 ## Supported frameworks
 
 - Node.js (`nextjs`, `react`, `nodejs`)
+- Static Tailwind/Vite HTML (`tailwind-static`)
 - Java (`springboot-maven`, `springboot-gradle`, `java-maven`, `java-gradle`)
 - Python (`fastapi`, `flask`, `python`)
 - PHP (`laravel`, `php`)
 - Static sites (`static`)
+
+## Static Tailwind/HTML projects
+
+Projects like `https://github.com/tochratana/Tailwind.git` are detected as `tailwind-static` when they have `package.json`, an HTML entrypoint, and Tailwind/Vite config or dependencies. The generated Dockerfile runs `npm ci` when a lockfile exists, falls back to `npm install` when it does not, runs `npm run build` when present, then serves `dist/`, `build/`, `public/`, or the root `index.html` with Nginx on port `80`.
 
 ## Key files
 
@@ -50,8 +55,8 @@ Production-grade CI/CD building blocks for a multi-tenant deployment platform (V
 - `infra-repo-creds` (Git credentials)
 - `registry-repository` (Secret text, e.g. `registry.example.com/platform`)
 - `registry-credentials` (Username/Password)
-- `gitops-repo-url` (Secret text, SSH URL)
-- `gitops-ssh` (SSH private key)
+- `gitops-repo-url` (Secret text, SSH URL or GitHub HTTPS URL)
+- `gitops-ssh` (SSH private key with write access to the GitOps repository)
 
 ## Pipeline inputs
 

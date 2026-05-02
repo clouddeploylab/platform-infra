@@ -18,6 +18,7 @@ template_for_framework() {
     laravel) echo "Dockerfile.laravel" ;;
     php) echo "Dockerfile.php" ;;
     static) echo "Dockerfile.static" ;;
+    tailwind-static) echo "Dockerfile.tailwind-static" ;;
     *) echo "Dockerfile.static" ;;
   esac
 }

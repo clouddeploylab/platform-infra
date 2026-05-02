@@ -46,7 +46,7 @@ default_container_port_for_framework() {
     nextjs|nodejs)
       echo "3000"
       ;;
-    react|laravel|php|static)
+    react|laravel|php|static|tailwind-static)
       echo "80"
       ;;
     springboot-maven|springboot-gradle|java-maven|java-gradle)
@@ -604,8 +604,10 @@ fi
 
 # If Jenkins stores GitHub repo as HTTPS but we authenticate via SSH key,
 # convert to SSH URL so git clone/push can use GIT_SSH_COMMAND.
-if [[ "${GITOPS_REPO}" =~ ^https://github\.com/([^/]+)/([^/]+?)(\.git)?/?$ ]]; then
-  GITOPS_REPO="git@github.com:${BASH_REMATCH[1]}/${BASH_REMATCH[2]}.git"
+if [[ "${GITOPS_REPO}" =~ ^https://github\.com/([^/]+)/([^/]+)/?$ ]]; then
+  GITHUB_OWNER="${BASH_REMATCH[1]}"
+  GITHUB_REPO="${BASH_REMATCH[2]%.git}"
+  GITOPS_REPO="git@github.com:${GITHUB_OWNER}/${GITHUB_REPO}.git"
 fi
 
 echo "[GitOps] Target repository: $(describe_gitops_repo "${GITOPS_REPO}") | branch=${GITOPS_BRANCH}"
