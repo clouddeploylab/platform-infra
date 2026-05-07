@@ -1,0 +1,333 @@
+pipeline {
+    agent { label 'trivy' }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        timestamps()
+        buildDiscarder(logRotator(numToKeepStr: '80'))
+    }
+
+    parameters {
+        string(name: 'SCAN_ID', defaultValue: '', description: 'Backend image_scan_jobs id')
+        choice(name: 'SCAN_MODE', choices: ['IMAGE', 'GIT_BUILD'], description: 'IMAGE scans an existing image. GIT_BUILD clones, builds, then scans.')
+        string(name: 'IMAGE_REF', defaultValue: '', description: 'Image reference for IMAGE mode, for example harbor.example.com/project/app:tag or nginx:latest')
+
+        string(name: 'REPO_URL', defaultValue: '', description: 'Git repository URL for GIT_BUILD mode')
+        string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch/tag for GIT_BUILD mode')
+        string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private Git repositories')
+        string(name: 'DOCKERFILE_PATH', defaultValue: 'Dockerfile', description: 'Dockerfile path inside the repository')
+        string(name: 'BUILD_CONTEXT', defaultValue: '.', description: 'Docker build context inside the repository')
+        string(name: 'TARGET_IMAGE_NAME', defaultValue: '', description: 'Optional temp image name for GIT_BUILD mode')
+        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Optional temp image tag for GIT_BUILD mode')
+
+        booleanParam(name: 'PRIVATE_REGISTRY', defaultValue: false, description: 'Login before scanning/pulling/pushing')
+        string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: 'registry-credentials', description: 'Jenkins username/password credential id for private registry')
+        booleanParam(name: 'PUSH_TEMP_IMAGE', defaultValue: false, description: 'Push GIT_BUILD temp image to registry before scan')
+        string(name: 'REGISTRY_REPOSITORY', defaultValue: '', description: 'Registry/project for temp images, for example harbor.example.com/scan-temp')
+
+        string(name: 'TRIVY_SEVERITY', defaultValue: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL', description: 'Trivy severities to include')
+        string(name: 'TRIVY_EXIT_CODE', defaultValue: '0', description: '0 reports only, 1 fails build when vulnerabilities match severity')
+        string(name: 'TRIVY_SERVER_URL', defaultValue: '', description: 'Optional Trivy server URL, for example http://trivy-server:4954')
+
+        string(name: 'BACKEND_CALLBACK_URL', defaultValue: '', description: 'Optional callback URL, for example https://api.example.com/api/v1/image-scanner/scans/{SCAN_ID}/callback')
+        string(name: 'BACKEND_CALLBACK_CREDENTIALS_ID', defaultValue: '', description: 'Optional secret text credential id used as Bearer token for callback')
+        booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: false, description: 'Upload report to DefectDojo if curl credentials are configured')
+        string(name: 'DEFECTDOJO_URL', defaultValue: 'https://defectdojo.devith.it.com', description: 'DefectDojo base URL')
+        string(name: 'DEFECTDOJO_CREDENTIALS_ID', defaultValue: 'DEFECTDOJO', description: 'DefectDojo API token credential id')
+        string(name: 'DEFECTDOJO_PRODUCT_NAME', defaultValue: '', description: 'DefectDojo product name')
+    }
+
+    environment {
+        REPORT_DIR = "trivy-reports"
+        TRIVY_REPORT_JSON = "trivy-reports/trivy-report.json"
+        TRIVY_REPORT_TABLE = "trivy-reports/trivy-report.txt"
+    }
+
+    stages {
+        stage('Validate input') {
+            steps {
+                script {
+                    env.NORMALIZED_SCAN_MODE = params.SCAN_MODE?.trim()?.toUpperCase()
+                    if (!['IMAGE', 'GIT_BUILD'].contains(env.NORMALIZED_SCAN_MODE)) {
+                        error('SCAN_MODE must be IMAGE or GIT_BUILD')
+                    }
+
+                    if (env.NORMALIZED_SCAN_MODE == 'IMAGE' && !params.IMAGE_REF?.trim()) {
+                        error('IMAGE_REF is required for IMAGE mode')
+                    }
+
+                    if (env.NORMALIZED_SCAN_MODE == 'GIT_BUILD' && !params.REPO_URL?.trim()) {
+                        error('REPO_URL is required for GIT_BUILD mode')
+                    }
+
+                    if (!(params.TRIVY_EXIT_CODE ==~ /^[0-9]+$/)) {
+                        error('TRIVY_EXIT_CODE must be numeric, normally 0 or 1')
+                    }
+
+                    sh 'mkdir -p "$REPORT_DIR"'
+                    echo "SCAN_MODE=${env.NORMALIZED_SCAN_MODE}"
+                }
+            }
+        }
+
+        stage('Resolve target image') {
+            steps {
+                script {
+                    if (env.NORMALIZED_SCAN_MODE == 'IMAGE') {
+                        env.SCAN_IMAGE_REF = params.IMAGE_REF.trim()
+                        echo "Scanning existing image: ${env.SCAN_IMAGE_REF}"
+                    } else {
+                        env.NORMALIZED_REPO_URL = params.REPO_URL.trim()
+                        if (env.NORMALIZED_REPO_URL.contains('%')) {
+                            try {
+                                env.NORMALIZED_REPO_URL = java.net.URLDecoder.decode(env.NORMALIZED_REPO_URL, 'UTF-8')
+                            } catch (Exception ignored) {
+                                echo 'Could not decode REPO_URL, using original value.'
+                            }
+                        }
+
+                        String repository = params.REGISTRY_REPOSITORY?.trim()
+                        if (!repository) {
+                            repository = 'local-scan'
+                        }
+                        repository = repository.replaceFirst(/^https?:\/\//, '').replaceAll(/\/+$/, '')
+
+                        String repoName = params.TARGET_IMAGE_NAME?.trim()
+                        if (!repoName) {
+                            repoName = env.NORMALIZED_REPO_URL.tokenize('/').last().replaceFirst(/\.git$/, '')
+                        }
+                        repoName = repoName.toLowerCase().replaceAll(/[^a-z0-9._-]+/, '-').replaceAll(/^-+|-+$/, '')
+
+                        String tag = params.IMAGE_TAG?.trim()
+                        if (!tag) {
+                            tag = "scan-${env.BUILD_NUMBER}"
+                        }
+                        tag = tag.replaceAll(/[^A-Za-z0-9_.-]+/, '-').replaceAll(/^-+|-+$/, '')
+
+                        env.SCAN_IMAGE_REF = "${repository}/${repoName}:${tag}"
+                        env.SCAN_REPOSITORY_HOST = repository.tokenize('/').first()
+                        echo "Build image target: ${env.SCAN_IMAGE_REF}"
+                    }
+                }
+            }
+        }
+
+        stage('Registry login') {
+            when {
+                expression { return params.PRIVATE_REGISTRY || params.PUSH_TEMP_IMAGE }
+            }
+            steps {
+                withCredentials([usernamePassword(
+                    credentialsId: params.REGISTRY_CREDENTIALS_ID,
+                    usernameVariable: 'REGISTRY_USERNAME',
+                    passwordVariable: 'REGISTRY_PASSWORD'
+                )]) {
+                    sh '''
+                        set -eu
+                        REGISTRY_HOST="${SCAN_REPOSITORY_HOST:-$(echo "$SCAN_IMAGE_REF" | cut -d/ -f1)}"
+                        echo "[registry] logging into ${REGISTRY_HOST}"
+                        echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+                            -u "$REGISTRY_USERNAME" --password-stdin
+                    '''
+                }
+            }
+        }
+
+        stage('Checkout repository') {
+            when {
+                expression { return env.NORMALIZED_SCAN_MODE == 'GIT_BUILD' }
+            }
+            steps {
+                dir('user-app') {
+                    script {
+                        deleteDir()
+                        if (params.REPO_CREDENTIALS_ID?.trim()) {
+                            checkout([
+                                $class: 'GitSCM',
+                                branches: [[name: "*/${params.BRANCH}"]],
+                                userRemoteConfigs: [[
+                                    url: env.NORMALIZED_REPO_URL,
+                                    credentialsId: params.REPO_CREDENTIALS_ID
+                                ]]
+                            ])
+                        } else {
+                            git url: env.NORMALIZED_REPO_URL, branch: params.BRANCH
+                        }
+                        env.APP_COMMIT_SHA = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
+                        echo "Checked out commit ${env.APP_COMMIT_SHA}"
+                    }
+                }
+            }
+        }
+
+        stage('Build temp image') {
+            when {
+                expression { return env.NORMALIZED_SCAN_MODE == 'GIT_BUILD' }
+            }
+            steps {
+                dir('user-app') {
+                    sh '''
+                        set -eu
+                        if [ ! -f "$DOCKERFILE_PATH" ]; then
+                            echo "Dockerfile not found: $DOCKERFILE_PATH"
+                            exit 1
+                        fi
+                        if [ ! -d "$BUILD_CONTEXT" ]; then
+                            echo "Build context not found: $BUILD_CONTEXT"
+                            exit 1
+                        fi
+
+                        echo "[build] docker build -f ${DOCKERFILE_PATH} -t ${SCAN_IMAGE_REF} ${BUILD_CONTEXT}"
+                        docker build --pull --progress=plain --provenance=false \
+                            -f "$DOCKERFILE_PATH" \
+                            -t "$SCAN_IMAGE_REF" \
+                            "$BUILD_CONTEXT"
+                    '''
+                }
+            }
+        }
+
+        stage('Push temp image') {
+            when {
+                expression { return env.NORMALIZED_SCAN_MODE == 'GIT_BUILD' && params.PUSH_TEMP_IMAGE }
+            }
+            steps {
+                sh '''
+                    set -eu
+                    echo "[push] pushing temp image ${SCAN_IMAGE_REF}"
+                    docker push "$SCAN_IMAGE_REF"
+                '''
+            }
+        }
+
+        stage('Trivy scan') {
+            steps {
+                sh '''
+                    set -eu
+                    TRIVY_ARGS="image --format json --output ${TRIVY_REPORT_JSON} --severity ${TRIVY_SEVERITY} --exit-code ${TRIVY_EXIT_CODE}"
+
+                    if [ -n "${TRIVY_SERVER_URL}" ]; then
+                        TRIVY_ARGS="$TRIVY_ARGS --server ${TRIVY_SERVER_URL}"
+                    fi
+
+                    echo "[scan] trivy ${TRIVY_ARGS} ${SCAN_IMAGE_REF}"
+                    trivy ${TRIVY_ARGS} "$SCAN_IMAGE_REF"
+
+                    echo "[scan] writing table report"
+                    TABLE_ARGS="image --format table --output ${TRIVY_REPORT_TABLE} --severity ${TRIVY_SEVERITY} --exit-code 0"
+                    if [ -n "${TRIVY_SERVER_URL}" ]; then
+                        TABLE_ARGS="$TABLE_ARGS --server ${TRIVY_SERVER_URL}"
+                    fi
+                    trivy ${TABLE_ARGS} "$SCAN_IMAGE_REF" || true
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'trivy-reports/*', fingerprint: true, allowEmptyArchive: true
+                }
+            }
+        }
+
+        stage('Callback backend') {
+            when {
+                expression { return params.BACKEND_CALLBACK_URL?.trim() }
+            }
+            steps {
+                script {
+                    String callbackUrl = params.BACKEND_CALLBACK_URL.trim()
+                    if (params.SCAN_ID?.trim()) {
+                        callbackUrl = callbackUrl.replace('{SCAN_ID}', params.SCAN_ID.trim())
+                    }
+                    env.RESOLVED_CALLBACK_URL = callbackUrl
+                }
+                script {
+                    if (params.BACKEND_CALLBACK_CREDENTIALS_ID?.trim()) {
+                        withCredentials([string(credentialsId: params.BACKEND_CALLBACK_CREDENTIALS_ID, variable: 'BACKEND_CALLBACK_TOKEN')]) {
+                            sh '''
+                                set -eu
+                                curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
+                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN}" \
+                                    -F "scanId=${SCAN_ID}" \
+                                    -F "status=COMPLETED" \
+                                    -F "imageRef=${SCAN_IMAGE_REF}" \
+                                    -F "commitSha=${APP_COMMIT_SHA:-}" \
+                                    -F "report=@${TRIVY_REPORT_JSON};type=application/json"
+                            '''
+                        }
+                    } else {
+                        sh '''
+                            set -eu
+                            curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
+                                -F "scanId=${SCAN_ID}" \
+                                -F "status=COMPLETED" \
+                                -F "imageRef=${SCAN_IMAGE_REF}" \
+                                -F "commitSha=${APP_COMMIT_SHA:-}" \
+                                -F "report=@${TRIVY_REPORT_JSON};type=application/json"
+                        '''
+                    }
+                }
+            }
+        }
+
+        stage('Upload DefectDojo') {
+            when {
+                expression { return params.UPLOAD_DEFECTDOJO }
+            }
+            steps {
+                withCredentials([string(credentialsId: params.DEFECTDOJO_CREDENTIALS_ID, variable: 'DEFECTDOJO_TOKEN')]) {
+                    sh '''
+                        set -eu
+                        PRODUCT_NAME="${DEFECTDOJO_PRODUCT_NAME:-${TARGET_IMAGE_NAME:-image-scan}}"
+                        echo "[defectdojo] uploading Trivy report for ${PRODUCT_NAME}"
+                        curl -sS -X POST "${DEFECTDOJO_URL%/}/api/v2/import-scan/" \
+                            -H "Authorization: Token ${DEFECTDOJO_TOKEN}" \
+                            -F "scan_type=Trivy Scan" \
+                            -F "minimum_severity=Info" \
+                            -F "active=true" \
+                            -F "verified=false" \
+                            -F "product_name=${PRODUCT_NAME}" \
+                            -F "engagement_name=Jenkins-${BUILD_NUMBER}" \
+                            -F "test_title=Trivy Image Scan - ${SCAN_IMAGE_REF}" \
+                            -F "file=@${TRIVY_REPORT_JSON};type=application/json"
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            echo "Image scan completed: ${env.SCAN_IMAGE_REF}"
+        }
+        failure {
+            script {
+                if (params.BACKEND_CALLBACK_URL?.trim()) {
+                    String callbackUrl = params.BACKEND_CALLBACK_URL.trim()
+                    if (params.SCAN_ID?.trim()) {
+                        callbackUrl = callbackUrl.replace('{SCAN_ID}', params.SCAN_ID.trim())
+                    }
+                    env.RESOLVED_CALLBACK_URL = callbackUrl
+                    sh '''
+                        set +e
+                        curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
+                            -F "scanId=${SCAN_ID}" \
+                            -F "status=FAILED" \
+                            -F "imageRef=${SCAN_IMAGE_REF:-}" \
+                            -F "message=Jenkins image scan failed. Check build ${BUILD_URL}" || true
+                    '''
+                }
+            }
+            echo "Image scan failed."
+        }
+        always {
+            sh '''
+                set +e
+                docker logout "$(echo "${SCAN_IMAGE_REF:-}" | cut -d/ -f1)" >/dev/null 2>&1
+                if [ "${SCAN_MODE}" = "GIT_BUILD" ] && [ "${PUSH_TEMP_IMAGE}" != "true" ] && [ -n "${SCAN_IMAGE_REF:-}" ]; then
+                    docker image rm "$SCAN_IMAGE_REF" >/dev/null 2>&1
+                fi
+            '''
+            cleanWs()
+        }
+    }
+}

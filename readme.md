@@ -43,6 +43,7 @@ Projects like `https://github.com/tochratana/Tailwind.git` are detected as `tail
 ## Key files
 
 - `jenkins/Jenkinsfile`
+- `jenkins/image-scan-pipeline.Jenkinsfile`
 - `jenkins/scripts/detect-framework.sh`
 - `jenkins/scripts/generate-dockerfile.sh`
 - `jenkins/scripts/update-gitops.sh`
@@ -57,6 +58,8 @@ Projects like `https://github.com/tochratana/Tailwind.git` are detected as `tail
 - `registry-credentials` (Username/Password)
 - `gitops-repo-url` (Secret text, SSH URL or GitHub HTTPS URL)
 - `gitops-ssh` (SSH private key with write access to the GitOps repository)
+- Optional for image scanning: `DEFECTDOJO` (Secret text API token)
+- Optional for image scanning callbacks: backend callback token as Secret text
 
 ## Pipeline inputs
 
@@ -81,3 +84,23 @@ bash -n jenkins/scripts/detect-framework.sh
 bash -n jenkins/scripts/generate-dockerfile.sh
 bash -n jenkins/scripts/update-gitops.sh
 ```
+
+## Image scan pipeline
+
+Create a Jenkins Pipeline job named `image-scan-pipeline` and point it to
+`jenkins/image-scan-pipeline.Jenkinsfile`.
+
+Main modes:
+
+- `SCAN_MODE=IMAGE`: scan an existing Harbor/Docker Hub/private registry image from `IMAGE_REF`.
+- `SCAN_MODE=GIT_BUILD`: clone `REPO_URL`, build a temporary image, then scan it.
+
+Common parameters:
+
+- `SCAN_ID`: backend scan job id.
+- `IMAGE_REF`: image ref for Harbor/external scans, for example `harbor.example.com/project/app:tag`.
+- `REPO_URL`, `BRANCH`, `DOCKERFILE_PATH`, `BUILD_CONTEXT`: Git build scan inputs.
+- `PRIVATE_REGISTRY=true` and `REGISTRY_CREDENTIALS_ID=registry-credentials` for private images.
+- `BACKEND_CALLBACK_URL`: optional callback URL, for example `https://api.example.com/api/v1/image-scanner/scans/{SCAN_ID}/callback`.
+- `BACKEND_CALLBACK_CREDENTIALS_ID`: optional Secret text credential used as callback bearer token.
+- `TRIVY_SERVER_URL`: optional Trivy server URL. Leave empty to use local Trivy CLI on the Jenkins `trivy` agent.
