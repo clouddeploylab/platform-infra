@@ -56,7 +56,7 @@ def notifyBackendRelease(String outcome) {
 }
 
 pipeline {
-    agent any
+    agent { label 'built-in || master' }
 
     options {
         timeout(time: 10, unit: 'MINUTES')
@@ -83,13 +83,13 @@ pipeline {
         text(name: 'ENV_JSON', defaultValue: '[]', description: 'Runtime env vars saved on selected release')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
+        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'gohabor.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project that stores release images')
         booleanParam(name: 'ROLLBACK_MODE', defaultValue: true, description: 'Always true for this job')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository')
     }
 
     environment {
         INFRA_REPO_URL = credentials('infra-repo-url')
-        REGISTRY_REPOSITORY = credentials('registry-repository')
         GITOPS_REPO_URL = credentials('gitops-repo-url')
     }
 
@@ -135,12 +135,11 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    env.NORMALIZED_REGISTRY_REPOSITORY = sh(
-                        script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##; s#/*$##' ''',
-                        returnStdout: true
-                    ).trim()
+                    env.NORMALIZED_REGISTRY_REPOSITORY = (params.REGISTRY_REPOSITORY?.trim() ?: 'gohabor.anajak-khmer.site/deployment-pipeline')
+                        .replaceFirst(/^https?:\/\//, '')
+                        .replaceAll(/\/+$/, '')
                     if (!env.NORMALIZED_REGISTRY_REPOSITORY.contains('/')) {
-                        error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: harbor.devith.it.com/deployment-pipeline)')
+                        error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: gohabor.anajak-khmer.site/deployment-pipeline)')
                     }
 
                     env.IMAGE_TAG = params.IMAGE_TAG.trim()

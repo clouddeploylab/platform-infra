@@ -58,7 +58,7 @@ def notifyBackendRelease(String outcome) {
 }
 
 pipeline {
-    agent any
+    agent { label 'built-in || master' }
 
     options {
         timeout(time: 20, unit: 'MINUTES')
@@ -85,6 +85,7 @@ pipeline {
         text(name: 'ENV_JSON', defaultValue: '[]', description: 'Optional JSON array of runtime env vars')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
+        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'gohabor.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project for pushed images')
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
         string(name: 'SONARQUBE_SERVER_NAME', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server configuration name')
         string(name: 'SONARQUBE_SCANNER_TOOL', defaultValue: '', description: 'Optional Jenkins SonarScanner tool name')
@@ -96,7 +97,6 @@ pipeline {
 
     environment {
         INFRA_REPO_URL = credentials('infra-repo-url')
-        REGISTRY_REPOSITORY = credentials('registry-repository')
         GITOPS_REPO_URL = credentials('gitops-repo-url')
     }
 
@@ -139,12 +139,13 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    def normalizedRegistry = (env.REGISTRY_REPOSITORY ?: '')
+                    def normalizedRegistry = (params.REGISTRY_REPOSITORY?.trim() ?: 'gohabor.anajak-khmer.site/deployment-pipeline')
                         .replaceFirst(/^https?:\/\//, '')
                         .replaceAll(/\/+$/, '')
                     if (!normalizedRegistry.contains('/')) {
-                        error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: harbor.devith.it.com/deployment-pipeline)')
+                        error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: gohabor.anajak-khmer.site/deployment-pipeline)')
                     }
+                    env.EFFECTIVE_REGISTRY_REPOSITORY = normalizedRegistry
 
                     echo "OPERATION=deploy | ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID}"
                 }
@@ -191,17 +192,11 @@ pipeline {
                         }
 
                         env.APP_COMMIT_SHA = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
-                        env.NORMALIZED_REGISTRY_REPOSITORY = sh(
-                            script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##; s#/*$##' ''',
-                            returnStdout: true
-                        ).trim()
+                        env.NORMALIZED_REGISTRY_REPOSITORY = env.EFFECTIVE_REGISTRY_REPOSITORY
                         env.IMAGE_TAG = params.IMAGE_TAG?.trim() ?: "${env.SAFE_USER_ID}-${env.BUILD_NUMBER}-${env.APP_COMMIT_SHA}"
                         env.IMAGE_REPOSITORY = "${env.NORMALIZED_REGISTRY_REPOSITORY}/${env.SAFE_USER_ID}/${env.SAFE_PROJECT_NAME}"
                         env.IMAGE_FULL = "${env.IMAGE_REPOSITORY}:${env.IMAGE_TAG}"
-                        env.REGISTRY_LOGIN_SERVER = sh(
-                            script: '''echo "$REGISTRY_REPOSITORY" | sed -E 's#^https?://##' | cut -d/ -f1''',
-                            returnStdout: true
-                        ).trim()
+                        env.REGISTRY_LOGIN_SERVER = env.EFFECTIVE_REGISTRY_REPOSITORY.split('/')[0]
 
                         echo "Resolved image: ${env.IMAGE_FULL}"
                     }
@@ -306,7 +301,7 @@ pipeline {
         }
 
         stage('Build, Scan, Push') {
-            agent { label 'trivy' }
+            agent { label 'istad' }
             steps {
                 script {
                     dir('platform-infra') {
@@ -365,21 +360,41 @@ pipeline {
 
                     if (params.ENABLE_TRIVY_SCAN) {
                         echo "[scan] Starting Trivy scan for ${env.IMAGE_FULL}"
-                        trivyScan(
-                            fullImage: env.IMAGE_FULL,
-                            trivyPath: '/home/enz/trivy/docker-compose.yml',
-                            reportPath: '/home/enz/trivy/reports/trivy-report.json',
-                            gateSeverity: 'HIGH,CRITICAL'
-                        )
+                        sh '''
+                            set -eu
+                            mkdir -p trivy-reports
+                            trivy --version
+                            trivy image \
+                                --format json \
+                                --output trivy-reports/trivy-report.json \
+                                --severity HIGH,CRITICAL \
+                                --exit-code 0 \
+                                "$IMAGE_FULL"
+                            trivy image \
+                                --format table \
+                                --output trivy-reports/trivy-report.txt \
+                                --severity HIGH,CRITICAL \
+                                --exit-code 0 \
+                                "$IMAGE_FULL" || true
+                        '''
+                        archiveArtifacts artifacts: 'trivy-reports/*', fingerprint: true, allowEmptyArchive: true
                         uploadDefectDojo(
                             defectdojoUrl: 'https://defectdojo.devith.it.com',
                             defectdojoCredentialId: 'DEFECTDOJO',
-                            reportPath: '/home/enz/trivy/reports/trivy-report.json',
+                            reportPath: 'trivy-reports/trivy-report.json',
                             productTypeName: 'Web Applications',
                             productName: env.EFFECTIVE_PROJECT_NAME,
                             engagementName: "Jenkins-${env.BUILD_NUMBER}",
                             testTitle: "Trivy Image Scan - ${env.IMAGE_TAG}"
                         )
+                        sh '''
+                            set -eu
+                            trivy image \
+                                --format table \
+                                --severity HIGH,CRITICAL \
+                                --exit-code 1 \
+                                "$IMAGE_FULL"
+                        '''
                     }
 
                     withCredentials([usernamePassword(

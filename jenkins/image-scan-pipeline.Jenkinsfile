@@ -1,5 +1,5 @@
 pipeline {
-    agent { label 'trivy' }
+    agent { label 'istad' }
 
     options {
         timeout(time: 30, unit: 'MINUTES')
@@ -10,7 +10,7 @@ pipeline {
     parameters {
         string(name: 'SCAN_ID', defaultValue: '', description: 'Backend image_scan_jobs id')
         choice(name: 'SCAN_MODE', choices: ['IMAGE', 'GIT_BUILD'], description: 'IMAGE scans an existing image. GIT_BUILD clones, builds, then scans.')
-        string(name: 'IMAGE_REF', defaultValue: '', description: 'Image reference for IMAGE mode, for example harbor.example.com/project/app:tag or nginx:latest')
+        string(name: 'IMAGE_REF', defaultValue: '', description: 'Image reference for IMAGE mode, for example gohabor.anajak-khmer.site/project/app:tag or nginx:latest')
 
         string(name: 'REPO_URL', defaultValue: '', description: 'Git repository URL for GIT_BUILD mode')
         string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch/tag for GIT_BUILD mode')
@@ -23,7 +23,7 @@ pipeline {
         booleanParam(name: 'PRIVATE_REGISTRY', defaultValue: false, description: 'Login before scanning/pulling/pushing')
         string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: 'registry-credentials', description: 'Jenkins username/password credential id for private registry')
         booleanParam(name: 'PUSH_TEMP_IMAGE', defaultValue: false, description: 'Push GIT_BUILD temp image to registry before scan')
-        string(name: 'REGISTRY_REPOSITORY', defaultValue: '', description: 'Registry/project for temp images, for example harbor.example.com/scan-temp')
+        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'gohabor.anajak-khmer.site/scan-temp', description: 'Registry/project for temp images')
 
         string(name: 'TRIVY_SEVERITY', defaultValue: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL', description: 'Trivy severities to include')
         string(name: 'TRIVY_EXIT_CODE', defaultValue: '0', description: '0 reports only, 1 fails build when vulnerabilities match severity')
