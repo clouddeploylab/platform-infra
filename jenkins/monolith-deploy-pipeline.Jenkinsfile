@@ -19,7 +19,7 @@ def notifyBackendRelease(String outcome) {
     }
 
     String framework = env.FRAMEWORK?.trim() ?: params.FRAMEWORK?.trim() ?: ''
-    String callbackToken = env.A8S_JENKINS_CALLBACK_TOKEN?.trim() ?: params.CALLBACK_TOKEN?.trim() ?: ''
+    String callbackTokenParam = params.CALLBACK_TOKEN?.trim() ?: ''
     String callbackUrl = "${callbackBaseUrl.replaceAll('/+$', '')}/api/v1/projects/${projectId}/releases/${releaseId}/${endpoint}"
     String callbackFile = ".a8s-release-callback-${endpoint}.json"
     Map payload = [
@@ -32,15 +32,19 @@ def notifyBackendRelease(String outcome) {
     withEnv([
         "A8S_RELEASE_CALLBACK_URL=${callbackUrl}",
         "A8S_RELEASE_CALLBACK_FILE=${callbackFile}",
-        "A8S_CALLBACK_TOKEN=${callbackToken}"
+        "A8S_CALLBACK_TOKEN_PARAM=${callbackTokenParam}"
     ]) {
         int callbackStatus = sh(
             script: '''
                 set +x
-                if [ -n "$A8S_CALLBACK_TOKEN" ]; then
+                token="${A8S_JENKINS_CALLBACK_TOKEN:-}"
+                if [ -z "$token" ] && [ -n "${A8S_CALLBACK_TOKEN_PARAM:-}" ]; then
+                    token="$A8S_CALLBACK_TOKEN_PARAM"
+                fi
+                if [ -n "$token" ]; then
                     curl -fsS -X POST "$A8S_RELEASE_CALLBACK_URL" \
                         -H 'Content-Type: application/json' \
-                        -H "X-A8S-Jenkins-Callback-Token: $A8S_CALLBACK_TOKEN" \
+                        -H "X-A8S-Jenkins-Callback-Token: $token" \
                         --data @"$A8S_RELEASE_CALLBACK_FILE"
                 else
                     curl -fsS -X POST "$A8S_RELEASE_CALLBACK_URL" \
@@ -51,7 +55,7 @@ def notifyBackendRelease(String outcome) {
             returnStatus: true
         )
         if (callbackStatus != 0) {
-            echo "Backend release callback failed with exit code ${callbackStatus}."
+            echo "Backend release callback failed with exit code ${callbackStatus} at ${callbackUrl}."
         } else {
             echo "Backend release callback sent: ${endpoint} framework=${framework ?: 'unknown'}."
         }
@@ -94,6 +98,10 @@ pipeline {
         booleanParam(name: 'ENABLE_SONARQUBE_QUALITY_GATE', defaultValue: true, description: 'Wait for SonarQube quality gate before build')
         booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: true, description: 'Run local Trivy image scan')
         string(name: 'TRIVY_BIN', defaultValue: 'trivy', description: 'Trivy executable name or absolute path on the Jenkins agent')
+        string(name: 'TRIVY_REPORT_SEVERITY', defaultValue: 'HIGH,CRITICAL', description: 'Severities included in Trivy report artifacts')
+        string(name: 'TRIVY_GATE_SEVERITY', defaultValue: 'CRITICAL', description: 'Severities that should fail the deployment gate')
+        string(name: 'TRIVY_GATE_EXIT_CODE', defaultValue: '1', description: 'Trivy gate exit code (1=enforce gate, 0=report-only)')
+        booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: false, description: 'Upload monolithic deploy Trivy report to DefectDojo')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository after push')
     }
 
@@ -127,6 +135,9 @@ pipeline {
                     }
                     if (!(params.APP_PORT ==~ /^\d+$/)) {
                         error('APP_PORT must be numeric')
+                    }
+                    if (!(params.TRIVY_GATE_EXIT_CODE ==~ /^\d+$/)) {
+                        error('TRIVY_GATE_EXIT_CODE must be numeric, normally 0 or 1')
                     }
 
                     env.SAFE_USER_ID = sh(
@@ -365,6 +376,10 @@ pipeline {
                         echo "[scan] Starting Trivy scan for ${env.IMAGE_FULL}"
                         sh '''
                             set -eu
+                            TRIVY_REPORT_SEVERITY_VALUE="${TRIVY_REPORT_SEVERITY:-HIGH,CRITICAL}"
+                            TRIVY_GATE_SEVERITY_VALUE="${TRIVY_GATE_SEVERITY:-CRITICAL}"
+                            TRIVY_GATE_EXIT_CODE_VALUE="${TRIVY_GATE_EXIT_CODE:-1}"
+                            echo "[scan] report severity: ${TRIVY_REPORT_SEVERITY_VALUE} | gate severity: ${TRIVY_GATE_SEVERITY_VALUE} | gate exit code: ${TRIVY_GATE_EXIT_CODE_VALUE}"
                             mkdir -p trivy-reports
                             cat > trivy-reports/run-trivy <<'TRIVY_RUNNER'
 #!/bin/sh
@@ -388,6 +403,8 @@ elif command -v docker >/dev/null 2>&1; then
     mkdir -p trivy-cache
     exec docker run --rm \
         -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "$PWD:$PWD" \
+        -w "$PWD" \
         -v "$PWD/trivy-cache:/root/.cache/" \
         aquasec/trivy:latest "$@"
 else
@@ -415,32 +432,40 @@ TRIVY_RUNNER
                             ./trivy-reports/run-trivy image \
                                 --format json \
                                 --output trivy-reports/trivy-report.json \
-                                --severity HIGH,CRITICAL \
+                                --severity "${TRIVY_REPORT_SEVERITY_VALUE}" \
                                 --exit-code 0 \
                                 "$IMAGE_FULL"
                             ./trivy-reports/run-trivy image \
                                 --format table \
                                 --output trivy-reports/trivy-report.txt \
-                                --severity HIGH,CRITICAL \
+                                --severity "${TRIVY_REPORT_SEVERITY_VALUE}" \
                                 --exit-code 0 \
                                 "$IMAGE_FULL" || true
                         '''
                         archiveArtifacts artifacts: 'trivy-reports/*', fingerprint: true, allowEmptyArchive: true
-                        uploadDefectDojo(
-                            defectdojoUrl: 'https://defectdojo.devith.it.com',
-                            defectdojoCredentialId: 'DEFECTDOJO',
-                            reportPath: 'trivy-reports/trivy-report.json',
-                            productTypeName: 'Web Applications',
-                            productName: env.EFFECTIVE_PROJECT_NAME,
-                            engagementName: "Jenkins-${env.BUILD_NUMBER}",
-                            testTitle: "Trivy Image Scan - ${env.IMAGE_TAG}"
-                        )
+                        if (params.UPLOAD_DEFECTDOJO) {
+                            catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
+                                uploadDefectDojo(
+                                    defectdojoUrl: 'https://defetchdojo.anajak-khmer.site',
+                                    defectdojoCredentialId: 'DEFECTDOJO',
+                                    reportPath: 'trivy-reports/trivy-report.json',
+                                    productTypeName: 'Web Applications',
+                                    productName: env.EFFECTIVE_PROJECT_NAME,
+                                    engagementName: "Jenkins-${env.BUILD_NUMBER}",
+                                    testTitle: "Trivy Image Scan - ${env.IMAGE_TAG}"
+                                )
+                            }
+                        } else {
+                            echo "[scan] DefectDojo upload disabled for monolithic deploy scan."
+                        }
                         sh '''
                             set -eu
+                            TRIVY_GATE_SEVERITY_VALUE="${TRIVY_GATE_SEVERITY:-CRITICAL}"
+                            TRIVY_GATE_EXIT_CODE_VALUE="${TRIVY_GATE_EXIT_CODE:-1}"
                             ./trivy-reports/run-trivy image \
                                 --format table \
-                                --severity HIGH,CRITICAL \
-                                --exit-code 1 \
+                                --severity "${TRIVY_GATE_SEVERITY_VALUE}" \
+                                --exit-code "${TRIVY_GATE_EXIT_CODE_VALUE}" \
                                 "$IMAGE_FULL"
                         '''
                     }

@@ -37,7 +37,7 @@ pipeline {
         password(name: 'BACKEND_CALLBACK_TOKEN', defaultValue: '', description: 'Optional bearer token for backend callback')
         string(name: 'BACKEND_CALLBACK_CREDENTIALS_ID', defaultValue: '', description: 'Optional secret text credential id used as Bearer token for callback')
         booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: false, description: 'Upload report to DefectDojo if curl credentials are configured')
-        string(name: 'DEFECTDOJO_URL', defaultValue: 'https://defectdojo.devith.it.com', description: 'DefectDojo base URL')
+        string(name: 'DEFECTDOJO_URL', defaultValue: 'https://defetchdojo.anajak-khmer.site', description: 'DefectDojo base URL')
         string(name: 'DEFECTDOJO_CREDENTIALS_ID', defaultValue: 'DEFECTDOJO', description: 'DefectDojo API token credential id')
         string(name: 'DEFECTDOJO_PRODUCT_NAME', defaultValue: '', description: 'DefectDojo product name')
     }
