@@ -36,6 +36,18 @@ spec:
       {{- end }}
       {{- $envVars = $normalizedEnv }}
       {{- end }}
+      {{- $renderedEnv := list }}
+      {{- range $envVar := $envVars }}
+      {{- if and (kindIs "map" $envVar) $envVar.secret }}
+      {{- $renderedEnv = append $renderedEnv (dict "name" $envVar.name "valueFrom" (dict "secretKeyRef" (dict "name" (printf "%s-env" (include "tenant-app.fullname" $)) "key" $envVar.name))) }}
+      {{- else if and (kindIs "map" $envVar) $envVar.valueFrom }}
+      {{- $renderedEnv = append $renderedEnv (dict "name" $envVar.name "valueFrom" $envVar.valueFrom) }}
+      {{- else if kindIs "map" $envVar }}
+      {{- $renderedEnv = append $renderedEnv (dict "name" $envVar.name "value" (printf "%v" (default "" $envVar.value))) }}
+      {{- else }}
+      {{- $renderedEnv = append $renderedEnv $envVar }}
+      {{- end }}
+      {{- end }}
       {{- if .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml .Values.imagePullSecrets | nindent 8 }}
@@ -47,9 +59,9 @@ spec:
           ports:
             - containerPort: {{ .Values.app.containerPort }}
               name: http
-          {{- if $envVars }}
+          {{- if $renderedEnv }}
           env:
-            {{- toYaml $envVars | nindent 12 }}
+            {{- toYaml $renderedEnv | nindent 12 }}
           {{- end }}
           resources:
             {{- toYaml .Values.resources | nindent 12 }}

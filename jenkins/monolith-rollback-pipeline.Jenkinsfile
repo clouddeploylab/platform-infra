@@ -17,6 +17,7 @@ def notifyBackendRelease(String outcome) {
     }
 
     String framework = params.FRAMEWORK?.trim() ?: ''
+    String callbackToken = env.A8S_JENKINS_CALLBACK_TOKEN?.trim() ?: params.CALLBACK_TOKEN?.trim() ?: ''
     String callbackUrl = "${callbackBaseUrl.replaceAll('/+$', '')}/api/v1/projects/${projectId}/releases/${releaseId}/${endpoint}"
     String callbackFile = ".a8s-release-callback-${endpoint}.json"
     Map payload = [
@@ -29,7 +30,7 @@ def notifyBackendRelease(String outcome) {
     withEnv([
         "A8S_RELEASE_CALLBACK_URL=${callbackUrl}",
         "A8S_RELEASE_CALLBACK_FILE=${callbackFile}",
-        "A8S_CALLBACK_TOKEN=${params.CALLBACK_TOKEN ?: ''}"
+        "A8S_CALLBACK_TOKEN=${callbackToken}"
     ]) {
         int callbackStatus = sh(
             script: '''
@@ -79,7 +80,7 @@ pipeline {
         string(name: 'PROJECT_ID', defaultValue: '', description: 'A8S project id for release callback')
         string(name: 'RELEASE_ID', defaultValue: '', description: 'A8S rollback release id for release callback')
         string(name: 'BACKEND_CALLBACK_URL', defaultValue: '', description: 'A8S backend public base URL for release callback')
-        string(name: 'CALLBACK_TOKEN', defaultValue: '', description: 'Optional A8S backend callback token')
+        string(name: 'CALLBACK_TOKEN', defaultValue: '', description: 'Legacy fallback only. Jenkins normally uses credential a8s-jenkins-callback-token.')
         text(name: 'ENV_JSON', defaultValue: '[]', description: 'Runtime env vars saved on selected release')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
@@ -91,6 +92,7 @@ pipeline {
     environment {
         INFRA_REPO_URL = credentials('infra-repo-url')
         GITOPS_REPO_URL = credentials('gitops-repo-url')
+        A8S_JENKINS_CALLBACK_TOKEN = credentials('a8s-jenkins-callback-token')
     }
 
     stages {

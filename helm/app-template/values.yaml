@@ -63,7 +63,9 @@ imagePullSecrets:
   - name: "registry-secret"
 
 env: []
-envJson: "[]"
+# Env entries support { name, value, secret }. secret=true renders a Kubernetes
+# Secret and injects the variable with valueFrom.secretKeyRef.
+envJson: ""
 nodeSelector: {}
 tolerations: []
 affinity: {}

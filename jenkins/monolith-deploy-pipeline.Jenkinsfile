@@ -19,6 +19,7 @@ def notifyBackendRelease(String outcome) {
     }
 
     String framework = env.FRAMEWORK?.trim() ?: params.FRAMEWORK?.trim() ?: ''
+    String callbackToken = env.A8S_JENKINS_CALLBACK_TOKEN?.trim() ?: params.CALLBACK_TOKEN?.trim() ?: ''
     String callbackUrl = "${callbackBaseUrl.replaceAll('/+$', '')}/api/v1/projects/${projectId}/releases/${releaseId}/${endpoint}"
     String callbackFile = ".a8s-release-callback-${endpoint}.json"
     Map payload = [
@@ -31,7 +32,7 @@ def notifyBackendRelease(String outcome) {
     withEnv([
         "A8S_RELEASE_CALLBACK_URL=${callbackUrl}",
         "A8S_RELEASE_CALLBACK_FILE=${callbackFile}",
-        "A8S_CALLBACK_TOKEN=${params.CALLBACK_TOKEN ?: ''}"
+        "A8S_CALLBACK_TOKEN=${callbackToken}"
     ]) {
         int callbackStatus = sh(
             script: '''
@@ -81,7 +82,7 @@ pipeline {
         string(name: 'PROJECT_ID', defaultValue: '', description: 'A8S project id for release callback')
         string(name: 'RELEASE_ID', defaultValue: '', description: 'A8S release id for release callback')
         string(name: 'BACKEND_CALLBACK_URL', defaultValue: '', description: 'A8S backend public base URL for release callback')
-        string(name: 'CALLBACK_TOKEN', defaultValue: '', description: 'Optional A8S backend callback token')
+        string(name: 'CALLBACK_TOKEN', defaultValue: '', description: 'Legacy fallback only. Jenkins normally uses credential a8s-jenkins-callback-token.')
         text(name: 'ENV_JSON', defaultValue: '[]', description: 'Optional JSON array of runtime env vars')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
@@ -89,15 +90,17 @@ pipeline {
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
         string(name: 'SONARQUBE_SERVER_NAME', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server configuration name')
         string(name: 'SONARQUBE_SCANNER_TOOL', defaultValue: '', description: 'Optional Jenkins SonarScanner tool name')
-        booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: false, description: 'Run SonarQube source analysis')
-        booleanParam(name: 'ENABLE_SONARQUBE_QUALITY_GATE', defaultValue: false, description: 'Wait for SonarQube quality gate before build')
-        booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: false, description: 'Run local Trivy image scan')
+        booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: true, description: 'Run SonarQube source analysis')
+        booleanParam(name: 'ENABLE_SONARQUBE_QUALITY_GATE', defaultValue: true, description: 'Wait for SonarQube quality gate before build')
+        booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: true, description: 'Run local Trivy image scan')
+        string(name: 'TRIVY_BIN', defaultValue: 'trivy', description: 'Trivy executable name or absolute path on the Jenkins agent')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository after push')
     }
 
     environment {
         INFRA_REPO_URL = credentials('infra-repo-url')
         GITOPS_REPO_URL = credentials('gitops-repo-url')
+        A8S_JENKINS_CALLBACK_TOKEN = credentials('a8s-jenkins-callback-token')
     }
 
     stages {
@@ -363,14 +366,59 @@ pipeline {
                         sh '''
                             set -eu
                             mkdir -p trivy-reports
-                            trivy --version
-                            trivy image \
+                            cat > trivy-reports/run-trivy <<'TRIVY_RUNNER'
+#!/bin/sh
+set -eu
+TRIVY_CMD="${TRIVY_BIN:-trivy}"
+if command -v "$TRIVY_CMD" >/dev/null 2>&1; then
+    exec "$(command -v "$TRIVY_CMD")" "$@"
+elif [ -x "$TRIVY_CMD" ]; then
+    exec "$TRIVY_CMD" "$@"
+elif [ -x /usr/local/bin/trivy ]; then
+    exec /usr/local/bin/trivy "$@"
+elif [ -x /usr/bin/trivy ]; then
+    exec /usr/bin/trivy "$@"
+elif [ -x /snap/bin/trivy ]; then
+    exec /snap/bin/trivy "$@"
+elif [ -x /home/istad/bin/trivy ]; then
+    exec /home/istad/bin/trivy "$@"
+elif [ -x /home/istad/.local/bin/trivy ]; then
+    exec /home/istad/.local/bin/trivy "$@"
+elif command -v docker >/dev/null 2>&1; then
+    mkdir -p trivy-cache
+    exec docker run --rm \
+        -v /var/run/docker.sock:/var/run/docker.sock \
+        -v "$PWD/trivy-cache:/root/.cache/" \
+        aquasec/trivy:latest "$@"
+else
+    echo "ERROR: Trivy was not found on this Jenkins agent and Docker fallback is unavailable."
+    echo "Agent: ${NODE_NAME:-unknown}"
+    echo "PATH: ${PATH:-}"
+    echo "Install Trivy on the istad agent, set TRIVY_BIN, or allow Docker to run aquasec/trivy:latest."
+    exit 127
+fi
+TRIVY_RUNNER
+                            chmod +x trivy-reports/run-trivy
+                            TRIVY_CONFIGURED_BIN="${TRIVY_BIN:-trivy}"
+                            if command -v "$TRIVY_CONFIGURED_BIN" >/dev/null 2>&1 \
+                                || [ -x "$TRIVY_CONFIGURED_BIN" ] \
+                                || [ -x /usr/local/bin/trivy ] \
+                                || [ -x /usr/bin/trivy ] \
+                                || [ -x /snap/bin/trivy ] \
+                                || [ -x /home/istad/bin/trivy ] \
+                                || [ -x /home/istad/.local/bin/trivy ]; then
+                                echo "[scan] Using host Trivy executable."
+                            else
+                                echo "[scan] Host Trivy not found; using Docker image aquasec/trivy:latest."
+                            fi
+                            ./trivy-reports/run-trivy --version
+                            ./trivy-reports/run-trivy image \
                                 --format json \
                                 --output trivy-reports/trivy-report.json \
                                 --severity HIGH,CRITICAL \
                                 --exit-code 0 \
                                 "$IMAGE_FULL"
-                            trivy image \
+                            ./trivy-reports/run-trivy image \
                                 --format table \
                                 --output trivy-reports/trivy-report.txt \
                                 --severity HIGH,CRITICAL \
@@ -389,7 +437,7 @@ pipeline {
                         )
                         sh '''
                             set -eu
-                            trivy image \
+                            ./trivy-reports/run-trivy image \
                                 --format table \
                                 --severity HIGH,CRITICAL \
                                 --exit-code 1 \

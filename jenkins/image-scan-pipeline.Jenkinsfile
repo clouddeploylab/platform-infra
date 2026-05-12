@@ -15,6 +15,8 @@ pipeline {
         string(name: 'REPO_URL', defaultValue: '', description: 'Git repository URL for GIT_BUILD mode')
         string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch/tag for GIT_BUILD mode')
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private Git repositories')
+        string(name: 'GIT_USERNAME', defaultValue: '', description: 'Optional Git username when no Jenkins credential id is used')
+        password(name: 'GIT_PASSWORD', defaultValue: '', description: 'Optional Git password/token when no Jenkins credential id is used')
         string(name: 'DOCKERFILE_PATH', defaultValue: 'Dockerfile', description: 'Dockerfile path inside the repository')
         string(name: 'BUILD_CONTEXT', defaultValue: '.', description: 'Docker build context inside the repository')
         string(name: 'TARGET_IMAGE_NAME', defaultValue: '', description: 'Optional temp image name for GIT_BUILD mode')
@@ -22,6 +24,8 @@ pipeline {
 
         booleanParam(name: 'PRIVATE_REGISTRY', defaultValue: false, description: 'Login before scanning/pulling/pushing')
         string(name: 'REGISTRY_CREDENTIALS_ID', defaultValue: 'registry-credentials', description: 'Jenkins username/password credential id for private registry')
+        string(name: 'REGISTRY_USERNAME', defaultValue: '', description: 'Optional registry username when no Jenkins credential id is used')
+        password(name: 'REGISTRY_PASSWORD', defaultValue: '', description: 'Optional registry password/token when no Jenkins credential id is used')
         booleanParam(name: 'PUSH_TEMP_IMAGE', defaultValue: false, description: 'Push GIT_BUILD temp image to registry before scan')
         string(name: 'REGISTRY_REPOSITORY', defaultValue: 'gohabor.anajak-khmer.site/scan-temp', description: 'Registry/project for temp images')
 
@@ -30,6 +34,7 @@ pipeline {
         string(name: 'TRIVY_SERVER_URL', defaultValue: '', description: 'Optional Trivy server URL, for example http://trivy-server:4954')
 
         string(name: 'BACKEND_CALLBACK_URL', defaultValue: '', description: 'Optional callback URL, for example https://api.example.com/api/v1/image-scanner/scans/{SCAN_ID}/callback')
+        password(name: 'BACKEND_CALLBACK_TOKEN', defaultValue: '', description: 'Optional bearer token for backend callback')
         string(name: 'BACKEND_CALLBACK_CREDENTIALS_ID', defaultValue: '', description: 'Optional secret text credential id used as Bearer token for callback')
         booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: false, description: 'Upload report to DefectDojo if curl credentials are configured')
         string(name: 'DEFECTDOJO_URL', defaultValue: 'https://defectdojo.devith.it.com', description: 'DefectDojo base URL')
@@ -117,18 +122,34 @@ pipeline {
                 expression { return params.PRIVATE_REGISTRY || params.PUSH_TEMP_IMAGE }
             }
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: params.REGISTRY_CREDENTIALS_ID,
-                    usernameVariable: 'REGISTRY_USERNAME',
-                    passwordVariable: 'REGISTRY_PASSWORD'
-                )]) {
-                    sh '''
-                        set -eu
-                        REGISTRY_HOST="${SCAN_REPOSITORY_HOST:-$(echo "$SCAN_IMAGE_REF" | cut -d/ -f1)}"
-                        echo "[registry] logging into ${REGISTRY_HOST}"
-                        echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
-                            -u "$REGISTRY_USERNAME" --password-stdin
-                    '''
+                script {
+                    if (params.REGISTRY_CREDENTIALS_ID?.trim()) {
+                        withCredentials([usernamePassword(
+                            credentialsId: params.REGISTRY_CREDENTIALS_ID,
+                            usernameVariable: 'RESOLVED_REGISTRY_USERNAME',
+                            passwordVariable: 'RESOLVED_REGISTRY_PASSWORD'
+                        )]) {
+                            sh '''
+                                set -eu
+                                REGISTRY_HOST="${SCAN_REPOSITORY_HOST:-$(echo "$SCAN_IMAGE_REF" | cut -d/ -f1)}"
+                                echo "[registry] logging into ${REGISTRY_HOST}"
+                                echo "$RESOLVED_REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+                                    -u "$RESOLVED_REGISTRY_USERNAME" --password-stdin
+                            '''
+                        }
+                    } else {
+                        sh '''
+                            set -eu
+                            if [ -z "${REGISTRY_USERNAME:-}" ] || [ -z "${REGISTRY_PASSWORD:-}" ]; then
+                                echo "Registry credentials are required for private registry login."
+                                exit 1
+                            fi
+                            REGISTRY_HOST="${SCAN_REPOSITORY_HOST:-$(echo "$SCAN_IMAGE_REF" | cut -d/ -f1)}"
+                            echo "[registry] logging into ${REGISTRY_HOST}"
+                            echo "$REGISTRY_PASSWORD" | docker login "$REGISTRY_HOST" \
+                                -u "$REGISTRY_USERNAME" --password-stdin
+                        '''
+                    }
                 }
             }
         }
@@ -141,18 +162,37 @@ pipeline {
                 dir('user-app') {
                     script {
                         deleteDir()
-                        if (params.REPO_CREDENTIALS_ID?.trim()) {
-                            checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: "*/${params.BRANCH}"]],
-                                userRemoteConfigs: [[
-                                    url: env.NORMALIZED_REPO_URL,
-                                    credentialsId: params.REPO_CREDENTIALS_ID
-                                ]]
-                            ])
-                        } else {
-                            git url: env.NORMALIZED_REPO_URL, branch: params.BRANCH
-                        }
+	                        if (params.REPO_CREDENTIALS_ID?.trim()) {
+	                            checkout([
+	                                $class: 'GitSCM',
+	                                branches: [[name: "*/${params.BRANCH}"]],
+	                                userRemoteConfigs: [[
+	                                    url: env.NORMALIZED_REPO_URL,
+	                                    credentialsId: params.REPO_CREDENTIALS_ID
+	                                ]]
+	                            ])
+	                        } else if (params.GIT_USERNAME?.trim() && params.GIT_PASSWORD?.trim()) {
+	                            sh '''
+	                                set -eu
+	                                cat > ../git-askpass.sh <<'EOF'
+#!/bin/sh
+case "$1" in
+  *Username*) printf '%s\\n' "$A8S_GIT_USERNAME" ;;
+  *Password*) printf '%s\\n' "$A8S_GIT_PASSWORD" ;;
+  *) printf '\\n' ;;
+esac
+EOF
+	                                chmod 700 ../git-askpass.sh
+	                                GIT_ASKPASS="$PWD/../git-askpass.sh" \
+	                                GIT_TERMINAL_PROMPT=0 \
+	                                A8S_GIT_USERNAME="$GIT_USERNAME" \
+	                                A8S_GIT_PASSWORD="$GIT_PASSWORD" \
+	                                git clone --depth 1 --branch "$BRANCH" "$NORMALIZED_REPO_URL" .
+	                                rm -f ../git-askpass.sh
+	                            '''
+	                        } else {
+	                            git url: env.NORMALIZED_REPO_URL, branch: params.BRANCH
+	                        }
                         env.APP_COMMIT_SHA = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
                         echo "Checked out commit ${env.APP_COMMIT_SHA}"
                     }
@@ -243,10 +283,10 @@ pipeline {
                 script {
                     if (params.BACKEND_CALLBACK_CREDENTIALS_ID?.trim()) {
                         withCredentials([string(credentialsId: params.BACKEND_CALLBACK_CREDENTIALS_ID, variable: 'BACKEND_CALLBACK_TOKEN')]) {
-                            sh '''
-                                set -eu
-                                curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
-                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN}" \
+	                            sh '''
+	                                set -eu
+	                                curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
+	                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN}" \
                                     -F "scanId=${SCAN_ID}" \
                                     -F "status=COMPLETED" \
                                     -F "imageRef=${SCAN_IMAGE_REF}" \
@@ -255,12 +295,13 @@ pipeline {
                             '''
                         }
                     } else {
-                        sh '''
-                            set -eu
-                            curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
-                                -F "scanId=${SCAN_ID}" \
-                                -F "status=COMPLETED" \
-                                -F "imageRef=${SCAN_IMAGE_REF}" \
+	                        sh '''
+	                            set -eu
+	                            curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
+                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN:-}" \
+	                                -F "scanId=${SCAN_ID}" \
+	                                -F "status=COMPLETED" \
+	                                -F "imageRef=${SCAN_IMAGE_REF}" \
                                 -F "commitSha=${APP_COMMIT_SHA:-}" \
                                 -F "report=@${TRIVY_REPORT_JSON};type=application/json"
                         '''
@@ -306,12 +347,13 @@ pipeline {
                     if (params.SCAN_ID?.trim()) {
                         callbackUrl = callbackUrl.replace('{SCAN_ID}', params.SCAN_ID.trim())
                     }
-                    env.RESOLVED_CALLBACK_URL = callbackUrl
-                    sh '''
-                        set +e
-                        curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
-                            -F "scanId=${SCAN_ID}" \
-                            -F "status=FAILED" \
+	                    env.RESOLVED_CALLBACK_URL = callbackUrl
+		                    sh '''
+		                        set +e
+		                        curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
+	                                -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN:-}" \
+		                            -F "scanId=${SCAN_ID}" \
+		                            -F "status=FAILED" \
                             -F "imageRef=${SCAN_IMAGE_REF:-}" \
                             -F "message=Jenkins image scan failed. Check build ${BUILD_URL}" || true
                     '''
