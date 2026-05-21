@@ -2,14 +2,15 @@ FROM node:20-alpine AS builder
 WORKDIR /app
 
 COPY package*.json ./
-RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 COPY . .
+RUN rm -rf node_modules && \
+    if [ -f package-lock.json ]; then npm ci; else npm install; fi
 RUN if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.build ? 0 : 1)"; then \
       npm run build; \
     elif [ -f src/input.css ]; then \
       echo "No build script found; compiling Tailwind from src/input.css."; \
-      npx tailwindcss -i ./src/input.css -o ./src/output.css --minify; \
+      npm exec -- tailwindcss -i ./src/input.css -o ./src/output.css --minify; \
     else \
       echo "No build script found; serving checked-in static files."; \
     fi

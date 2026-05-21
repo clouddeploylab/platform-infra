@@ -90,7 +90,7 @@ pipeline {
         text(name: 'ENV_JSON', defaultValue: '[]', description: 'Optional JSON array of runtime env vars')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
-        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'gohabor.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project for pushed images')
+        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'goharbor-itp.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project for pushed images')
         string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
         string(name: 'SONARQUBE_SERVER_NAME', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server configuration name')
         string(name: 'SONARQUBE_SCANNER_TOOL', defaultValue: '', description: 'Optional Jenkins SonarScanner tool name')
@@ -153,11 +153,11 @@ pipeline {
                         returnStdout: true
                     ).trim()
 
-                    def normalizedRegistry = (params.REGISTRY_REPOSITORY?.trim() ?: 'gohabor.anajak-khmer.site/deployment-pipeline')
+                    def normalizedRegistry = (params.REGISTRY_REPOSITORY?.trim() ?: 'goharbor-itp.anajak-khmer.site/deployment-pipeline')
                         .replaceFirst(/^https?:\/\//, '')
                         .replaceAll(/\/+$/, '')
                     if (!normalizedRegistry.contains('/')) {
-                        error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: gohabor.anajak-khmer.site/deployment-pipeline)')
+                        error('REGISTRY_REPOSITORY must include registry host and Harbor project (example: goharbor-itp.anajak-khmer.site/deployment-pipeline)')
                     }
                     env.EFFECTIVE_REGISTRY_REPOSITORY = normalizedRegistry
 

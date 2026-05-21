@@ -54,7 +54,7 @@ Projects like `https://github.com/tochratana/Tailwind.git` are detected as `tail
 
 - `infra-repo-url` (Secret text)
 - `infra-repo-creds` (Git credentials)
-- `REGISTRY_REPOSITORY` pipeline parameter (default `gohabor.anajak-khmer.site/deployment-pipeline`)
+- `REGISTRY_REPOSITORY` pipeline parameter (default `goharbor-itp.anajak-khmer.site/deployment-pipeline`)
 - `registry-credentials` (Username/Password)
 - `gitops-repo-url` (Secret text, SSH URL or GitHub HTTPS URL)
 - `gitops-ssh` (SSH private key with write access to the GitOps repository)
@@ -98,7 +98,7 @@ Main modes:
 Common parameters:
 
 - `SCAN_ID`: backend scan job id.
-- `IMAGE_REF`: image ref for Harbor/external scans, for example `gohabor.anajak-khmer.site/project/app:tag`.
+- `IMAGE_REF`: image ref for Harbor/external scans, for example `goharbor-itp.anajak-khmer.site/project/app:tag`.
 - `REPO_URL`, `BRANCH`, `DOCKERFILE_PATH`, `BUILD_CONTEXT`: Git build scan inputs.
 - `PRIVATE_REGISTRY=true` and `REGISTRY_CREDENTIALS_ID=registry-credentials` for private images.
 - `BACKEND_CALLBACK_URL`: optional callback URL, for example `https://api.example.com/api/v1/image-scanner/scans/{SCAN_ID}/callback`.

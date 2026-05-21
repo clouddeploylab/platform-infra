@@ -32,10 +32,11 @@ pipeline {
         string(name: 'TRIVY_SEVERITY', defaultValue: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL', description: 'Trivy severities to include')
         string(name: 'TRIVY_EXIT_CODE', defaultValue: '0', description: '0 reports only, 1 fails build when vulnerabilities match severity')
         string(name: 'TRIVY_SERVER_URL', defaultValue: '', description: 'Optional Trivy server URL, for example http://trivy-server:4954')
+        string(name: 'TRIVY_BIN', defaultValue: 'trivy', description: 'Trivy executable name or absolute path on the Jenkins agent')
 
         string(name: 'BACKEND_CALLBACK_URL', defaultValue: '', description: 'Optional callback URL, for example https://api.example.com/api/v1/image-scanner/scans/{SCAN_ID}/callback')
         password(name: 'BACKEND_CALLBACK_TOKEN', defaultValue: '', description: 'Optional bearer token for backend callback')
-        string(name: 'BACKEND_CALLBACK_CREDENTIALS_ID', defaultValue: '', description: 'Optional secret text credential id used as Bearer token for callback')
+        string(name: 'BACKEND_CALLBACK_CREDENTIALS_ID', defaultValue: 'a8s-jenkins-callback-token', description: 'Optional secret text credential id used as Bearer token for callback')
         booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: false, description: 'Upload report to DefectDojo if curl credentials are configured')
         string(name: 'DEFECTDOJO_URL', defaultValue: 'https://defetchdojo.anajak-khmer.site', description: 'DefectDojo base URL')
         string(name: 'DEFECTDOJO_CREDENTIALS_ID', defaultValue: 'DEFECTDOJO', description: 'DefectDojo API token credential id')
@@ -67,6 +68,10 @@ pipeline {
 
                     if (!(params.TRIVY_EXIT_CODE ==~ /^[0-9]+$/)) {
                         error('TRIVY_EXIT_CODE must be numeric, normally 0 or 1')
+                    }
+
+                    if (params.BACKEND_CALLBACK_URL?.trim()?.contains('localhost')) {
+                        echo "[callback] WARNING: BACKEND_CALLBACK_URL points to localhost. Jenkins will call itself, not your backend."
                     }
 
                     sh 'mkdir -p "$REPORT_DIR"'
@@ -244,68 +249,99 @@ EOF
             steps {
                 sh '''
                     set -eu
-                    TRIVY_ARGS="image --format json --output ${TRIVY_REPORT_JSON} --severity ${TRIVY_SEVERITY} --exit-code ${TRIVY_EXIT_CODE}"
+                    TRIVY_SEVERITY_VALUE="${TRIVY_SEVERITY:-CRITICAL,HIGH,MEDIUM,LOW}"
+                    TRIVY_EXIT_CODE_VALUE="${TRIVY_EXIT_CODE:-0}"
+                    TRIVY_SERVER_URL_VALUE="${TRIVY_SERVER_URL:-}"
+                    RUN_TRIVY="${REPORT_DIR}/run-trivy"
+                    TRIVY_CONFIGURED_BIN="${TRIVY_BIN:-trivy}"
 
-                    if [ -n "${TRIVY_SERVER_URL}" ]; then
-                        TRIVY_ARGS="$TRIVY_ARGS --server ${TRIVY_SERVER_URL}"
+                    if command -v "$TRIVY_CONFIGURED_BIN" >/dev/null 2>&1; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+TRIVY_CMD="${TRIVY_BIN:-trivy}"
+exec "$(command -v "$TRIVY_CMD")" "$@"
+EOF
+                    elif [ -x "$TRIVY_CONFIGURED_BIN" ]; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+exec "${TRIVY_BIN}" "$@"
+EOF
+                    elif [ -x /usr/local/bin/trivy ]; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+exec /usr/local/bin/trivy "$@"
+EOF
+                    elif [ -x /usr/bin/trivy ]; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+exec /usr/bin/trivy "$@"
+EOF
+                    elif [ -x /snap/bin/trivy ]; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+exec /snap/bin/trivy "$@"
+EOF
+                    elif [ -x /home/istad/bin/trivy ]; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+exec /home/istad/bin/trivy "$@"
+EOF
+                    elif [ -x /home/istad/.local/bin/trivy ]; then
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+exec /home/istad/.local/bin/trivy "$@"
+EOF
+                    elif command -v docker >/dev/null 2>&1; then
+                        echo "[scan] Host Trivy not found; using Docker image aquasec/trivy:latest."
+                        cat > "$RUN_TRIVY" <<'EOF'
+#!/bin/sh
+set -eu
+CACHE_DIR="${HOME:-/tmp}/.cache/trivy"
+mkdir -p "$CACHE_DIR"
+exec docker run --rm \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD:/work" \
+  -v "$CACHE_DIR:/root/.cache/trivy" \
+  -w /work \
+  aquasec/trivy:latest "$@"
+EOF
+                    else
+                        echo "ERROR: Trivy was not found on this Jenkins agent and Docker fallback is unavailable."
+                        echo "Agent: ${NODE_NAME:-unknown}"
+                        echo "PATH: ${PATH:-}"
+                        echo "Install Trivy on the istad agent, set TRIVY_BIN, or allow Docker to run aquasec/trivy:latest."
+                        exit 127
+                    fi
+                    chmod +x "$RUN_TRIVY"
+                    "$RUN_TRIVY" --version
+
+                    TRIVY_ARGS="image --format json --output ${TRIVY_REPORT_JSON} --severity ${TRIVY_SEVERITY_VALUE} --exit-code ${TRIVY_EXIT_CODE_VALUE}"
+
+                    if [ -n "${TRIVY_SERVER_URL_VALUE}" ]; then
+                        TRIVY_ARGS="$TRIVY_ARGS --server ${TRIVY_SERVER_URL_VALUE}"
                     fi
 
                     echo "[scan] trivy ${TRIVY_ARGS} ${SCAN_IMAGE_REF}"
-                    trivy ${TRIVY_ARGS} "$SCAN_IMAGE_REF"
+                    "$RUN_TRIVY" ${TRIVY_ARGS} "$SCAN_IMAGE_REF"
 
                     echo "[scan] writing table report"
-                    TABLE_ARGS="image --format table --output ${TRIVY_REPORT_TABLE} --severity ${TRIVY_SEVERITY} --exit-code 0"
-                    if [ -n "${TRIVY_SERVER_URL}" ]; then
-                        TABLE_ARGS="$TABLE_ARGS --server ${TRIVY_SERVER_URL}"
+                    TABLE_ARGS="image --format table --output ${TRIVY_REPORT_TABLE} --severity ${TRIVY_SEVERITY_VALUE} --exit-code 0"
+                    if [ -n "${TRIVY_SERVER_URL_VALUE}" ]; then
+                        TABLE_ARGS="$TABLE_ARGS --server ${TRIVY_SERVER_URL_VALUE}"
                     fi
-                    trivy ${TABLE_ARGS} "$SCAN_IMAGE_REF" || true
+                    "$RUN_TRIVY" ${TABLE_ARGS} "$SCAN_IMAGE_REF" || true
                 '''
             }
             post {
                 always {
                     archiveArtifacts artifacts: 'trivy-reports/*', fingerprint: true, allowEmptyArchive: true
-                }
-            }
-        }
-
-        stage('Callback backend') {
-            when {
-                expression { return params.BACKEND_CALLBACK_URL?.trim() }
-            }
-            steps {
-                script {
-                    String callbackUrl = params.BACKEND_CALLBACK_URL.trim()
-                    if (params.SCAN_ID?.trim()) {
-                        callbackUrl = callbackUrl.replace('{SCAN_ID}', params.SCAN_ID.trim())
-                    }
-                    env.RESOLVED_CALLBACK_URL = callbackUrl
-                }
-                script {
-                    if (params.BACKEND_CALLBACK_CREDENTIALS_ID?.trim()) {
-                        withCredentials([string(credentialsId: params.BACKEND_CALLBACK_CREDENTIALS_ID, variable: 'BACKEND_CALLBACK_TOKEN')]) {
-	                            sh '''
-	                                set -eu
-	                                curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
-	                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN}" \
-                                    -F "scanId=${SCAN_ID}" \
-                                    -F "status=COMPLETED" \
-                                    -F "imageRef=${SCAN_IMAGE_REF}" \
-                                    -F "commitSha=${APP_COMMIT_SHA:-}" \
-                                    -F "report=@${TRIVY_REPORT_JSON};type=application/json"
-                            '''
-                        }
-                    } else {
-	                        sh '''
-	                            set -eu
-	                            curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
-                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN:-}" \
-	                                -F "scanId=${SCAN_ID}" \
-	                                -F "status=COMPLETED" \
-	                                -F "imageRef=${SCAN_IMAGE_REF}" \
-                                -F "commitSha=${APP_COMMIT_SHA:-}" \
-                                -F "report=@${TRIVY_REPORT_JSON};type=application/json"
-                        '''
-                    }
                 }
             }
         }
@@ -326,11 +362,67 @@ EOF
                             -F "minimum_severity=Info" \
                             -F "active=true" \
                             -F "verified=false" \
+                            -F "auto_create_context=true" \
+                            -F "close_old_findings=true" \
                             -F "product_name=${PRODUCT_NAME}" \
                             -F "engagement_name=Jenkins-${BUILD_NUMBER}" \
                             -F "test_title=Trivy Image Scan - ${SCAN_IMAGE_REF}" \
                             -F "file=@${TRIVY_REPORT_JSON};type=application/json"
                     '''
+                }
+            }
+        }
+
+        stage('Callback backend') {
+            when {
+                expression { return params.BACKEND_CALLBACK_URL?.trim() }
+            }
+            steps {
+                script {
+                    String callbackUrl = params.BACKEND_CALLBACK_URL.trim()
+                    if (params.SCAN_ID?.trim()) {
+                        callbackUrl = callbackUrl.replace('{SCAN_ID}', params.SCAN_ID.trim())
+                    }
+                    env.RESOLVED_CALLBACK_URL = callbackUrl
+                }
+                script {
+                    if (params.BACKEND_CALLBACK_CREDENTIALS_ID?.trim()) {
+                        withCredentials([string(credentialsId: params.BACKEND_CALLBACK_CREDENTIALS_ID, variable: 'BACKEND_CALLBACK_TOKEN')]) {
+	                            sh '''
+	                                set +e
+	                                curl -fsS -X POST "$RESOLVED_CALLBACK_URL" \
+	                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN}" \
+                                    -F "scanId=${SCAN_ID}" \
+                                    -F "status=COMPLETED" \
+                                    -F "imageRef=${SCAN_IMAGE_REF}" \
+                                    -F "commitSha=${APP_COMMIT_SHA:-}" \
+                                    -F "callbackToken=${BACKEND_CALLBACK_TOKEN}" \
+                                    -F "report=@${TRIVY_REPORT_JSON};type=application/json"
+                                    CALLBACK_STATUS=$?
+                                    if [ "$CALLBACK_STATUS" -ne 0 ]; then
+                                        echo "[callback] Backend callback failed with exit ${CALLBACK_STATUS}; Trivy report remains archived in Jenkins."
+                                    fi
+                                    exit 0
+                            '''
+                        }
+                    } else {
+	                        sh '''
+	                            set +e
+	                            curl -fsS -X POST "$RESOLVED_CALLBACK_URL" \
+                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN:-}" \
+	                                -F "scanId=${SCAN_ID}" \
+	                                -F "status=COMPLETED" \
+	                                -F "imageRef=${SCAN_IMAGE_REF}" \
+                                -F "commitSha=${APP_COMMIT_SHA:-}" \
+                                -F "callbackToken=${BACKEND_CALLBACK_TOKEN:-}" \
+                                -F "report=@${TRIVY_REPORT_JSON};type=application/json"
+                                CALLBACK_STATUS=$?
+                                if [ "$CALLBACK_STATUS" -ne 0 ]; then
+                                    echo "[callback] Backend callback failed with exit ${CALLBACK_STATUS}; Trivy report remains archived in Jenkins."
+                                fi
+                                exit 0
+                        '''
+                    }
                 }
             }
         }
@@ -347,16 +439,32 @@ EOF
                     if (params.SCAN_ID?.trim()) {
                         callbackUrl = callbackUrl.replace('{SCAN_ID}', params.SCAN_ID.trim())
                     }
-	                    env.RESOLVED_CALLBACK_URL = callbackUrl
-		                    sh '''
-		                        set +e
-		                        curl -sS -X POST "$RESOLVED_CALLBACK_URL" \
-	                                -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN:-}" \
-		                            -F "scanId=${SCAN_ID}" \
-		                            -F "status=FAILED" \
-                            -F "imageRef=${SCAN_IMAGE_REF:-}" \
-                            -F "message=Jenkins image scan failed. Check build ${BUILD_URL}" || true
-                    '''
+                    env.RESOLVED_CALLBACK_URL = callbackUrl
+                    if (params.BACKEND_CALLBACK_CREDENTIALS_ID?.trim()) {
+                        withCredentials([string(credentialsId: params.BACKEND_CALLBACK_CREDENTIALS_ID, variable: 'BACKEND_CALLBACK_TOKEN')]) {
+                            sh '''
+                                set +e
+                                curl -fsS -X POST "$RESOLVED_CALLBACK_URL" \
+                                    -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN}" \
+                                    -F "scanId=${SCAN_ID}" \
+                                    -F "status=FAILED" \
+                                    -F "imageRef=${SCAN_IMAGE_REF:-}" \
+                                    -F "message=Jenkins image scan failed. Check build ${BUILD_URL}" \
+                                    -F "callbackToken=${BACKEND_CALLBACK_TOKEN}" || true
+                            '''
+                        }
+                    } else {
+                        sh '''
+                            set +e
+                            curl -fsS -X POST "$RESOLVED_CALLBACK_URL" \
+                                -H "Authorization: Bearer ${BACKEND_CALLBACK_TOKEN:-}" \
+                                -F "scanId=${SCAN_ID}" \
+                                -F "status=FAILED" \
+                                -F "imageRef=${SCAN_IMAGE_REF:-}" \
+                                -F "message=Jenkins image scan failed. Check build ${BUILD_URL}" \
+                                -F "callbackToken=${BACKEND_CALLBACK_TOKEN:-}" || true
+                        '''
+                    }
                 }
             }
             echo "Image scan failed."
