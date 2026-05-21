@@ -1,11 +1,17 @@
 FROM node:20-alpine AS deps
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
+COPY . .
+RUN rm -rf node_modules && corepack enable && \
+    if [ -f yarn.lock ]; then echo yarn > /tmp/package-manager && if [ -f .yarnrc.yml ]; then yarn install --immutable; else yarn install --frozen-lockfile; fi; \
+    elif [ -f pnpm-lock.yaml ]; then echo pnpm > /tmp/package-manager && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile; \
+    elif [ -f package-lock.json ]; then echo npm > /tmp/package-manager && npm ci; \
+    else echo npm > /tmp/package-manager && npm install; fi
 
 FROM deps AS builder
-COPY . .
-RUN npm run build
+RUN corepack enable && \
+    if [ -f yarn.lock ]; then yarn build; \
+    elif [ -f pnpm-lock.yaml ]; then corepack prepare pnpm@latest --activate && pnpm run build; \
+    else npm run build; fi
 
 FROM node:20-alpine
 WORKDIR /app
@@ -13,9 +19,10 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /tmp/package-manager ./package-manager
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/.next ./.next
 COPY --from=builder /app/public ./public
 
 EXPOSE 3000
-CMD ["sh", "-c", "npm run start"]
+CMD ["sh", "-c", "corepack enable && case \"$(cat package-manager 2>/dev/null || echo npm)\" in yarn) yarn start ;; pnpm) corepack prepare pnpm@latest --activate && pnpm run start ;; *) npm run start ;; esac"]

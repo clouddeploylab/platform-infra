@@ -1,10 +1,12 @@
 FROM node:20-alpine
 WORKDIR /app
 
-COPY package*.json ./
-RUN npm ci --omit=dev
-
 COPY . .
+RUN rm -rf node_modules && corepack enable && \
+    if [ -f yarn.lock ]; then echo yarn > package-manager && if [ -f .yarnrc.yml ]; then yarn workspaces focus --production || yarn install --immutable; else yarn install --frozen-lockfile --production=true; fi; \
+    elif [ -f pnpm-lock.yaml ]; then echo pnpm > package-manager && corepack prepare pnpm@latest --activate && pnpm install --frozen-lockfile --prod; \
+    elif [ -f package-lock.json ]; then echo npm > package-manager && npm ci --omit=dev; \
+    else echo npm > package-manager && npm install --omit=dev; fi
 EXPOSE 3000
 
-CMD ["sh", "-c", "npm run start --if-present || node index.js"]
+CMD ["sh", "-c", "corepack enable && case \"$(cat package-manager 2>/dev/null || echo npm)\" in yarn) yarn start ;; pnpm) corepack prepare pnpm@latest --activate && pnpm run start ;; *) npm run start --if-present || node index.js ;; esac"]
