@@ -152,7 +152,11 @@ pipeline {
         string(name: 'TRIVY_REPORT_SEVERITY', defaultValue: 'HIGH,CRITICAL', description: 'Severities included in Trivy report artifacts')
         string(name: 'TRIVY_GATE_SEVERITY', defaultValue: 'CRITICAL', description: 'Severities that should fail the deployment gate')
         string(name: 'TRIVY_GATE_EXIT_CODE', defaultValue: '1', description: 'Trivy gate exit code (1=enforce gate, 0=report-only)')
-        booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: false, description: 'Upload monolithic deploy Trivy report to DefectDojo')
+        booleanParam(name: 'UPLOAD_DEFECTDOJO', defaultValue: true, description: 'Upload monolithic deploy Trivy report to DefectDojo')
+        string(name: 'DEFECTDOJO_URL', defaultValue: 'https://defetchdojo.anajak-khmer.site', description: 'DefectDojo base URL')
+        string(name: 'DEFECTDOJO_CREDENTIALS_ID', defaultValue: 'DEFECTDOJO', description: 'Jenkins secret text credential id containing a DefectDojo API token')
+        string(name: 'DEFECTDOJO_PRODUCT_TYPE_NAME', defaultValue: 'Web Applications', description: 'DefectDojo product type name used when auto-creating products')
+        string(name: 'DEFECTDOJO_PRODUCT_NAME', defaultValue: '', description: 'DefectDojo product name. Defaults to PROJECT_NAME.')
         booleanParam(name: 'ENABLE_GITOPS_UPDATE', defaultValue: true, description: 'Update GitOps repository after push')
     }
 
@@ -515,15 +519,35 @@ TRIVY_RUNNER
                         archiveArtifacts artifacts: 'trivy-reports/*', fingerprint: true, allowEmptyArchive: true
                         if (params.UPLOAD_DEFECTDOJO) {
                             catchError(buildResult: 'SUCCESS', stageResult: 'UNSTABLE') {
-                                uploadDefectDojo(
-                                    defectdojoUrl: 'https://defetchdojo.anajak-khmer.site',
-                                    defectdojoCredentialId: 'DEFECTDOJO',
-                                    reportPath: 'trivy-reports/trivy-report.json',
-                                    productTypeName: 'Web Applications',
-                                    productName: env.EFFECTIVE_PROJECT_NAME,
-                                    engagementName: "Jenkins-${env.BUILD_NUMBER}",
-                                    testTitle: "Trivy Image Scan - ${env.IMAGE_TAG}"
-                                )
+                                withCredentials([string(credentialsId: params.DEFECTDOJO_CREDENTIALS_ID?.trim() ?: 'DEFECTDOJO', variable: 'DEFECTDOJO_TOKEN')]) {
+                                    sh '''
+                                        set -eu
+                                        PRODUCT_NAME="${DEFECTDOJO_PRODUCT_NAME:-${WORKSPACE_ID}-${EFFECTIVE_PROJECT_NAME}}"
+                                        PRODUCT_TYPE_NAME="${DEFECTDOJO_PRODUCT_TYPE_NAME:-Web Applications}"
+                                        DEFECTDOJO_BASE_URL="${DEFECTDOJO_URL:-https://defetchdojo.anajak-khmer.site}"
+                                        RESPONSE_FILE="$(mktemp)"
+                                        echo "[defectdojo] Uploading Trivy report for ${PRODUCT_NAME}"
+                                        HTTP_CODE="$(curl -sS -o "${RESPONSE_FILE}" -w "%{http_code}" -X POST "${DEFECTDOJO_BASE_URL%/}/api/v2/import-scan/" \
+                                            -H "Authorization: Token ${DEFECTDOJO_TOKEN}" \
+                                            -F "scan_type=Trivy Scan" \
+                                            -F "file=@trivy-reports/trivy-report.json" \
+                                            -F "product_type_name=${PRODUCT_TYPE_NAME}" \
+                                            -F "product_name=${PRODUCT_NAME}" \
+                                            -F "engagement_name=Jenkins-${BUILD_NUMBER}" \
+                                            -F "test_title=Trivy Image Scan - ${IMAGE_TAG}" \
+                                            -F "minimum_severity=Info" \
+                                            -F "auto_create_context=true" \
+                                            -F "active=true" \
+                                            -F "verified=true")"
+                                        if [ "${HTTP_CODE}" -lt 200 ] || [ "${HTTP_CODE}" -ge 300 ]; then
+                                            echo "[defectdojo] Upload failed with HTTP ${HTTP_CODE}"
+                                            cat "${RESPONSE_FILE}"
+                                            exit 1
+                                        fi
+                                        cat "${RESPONSE_FILE}"
+                                        echo "[defectdojo] Upload completed"
+                                    '''
+                                }
                             }
                         } else {
                             echo "[scan] DefectDojo upload disabled for monolithic deploy scan."
