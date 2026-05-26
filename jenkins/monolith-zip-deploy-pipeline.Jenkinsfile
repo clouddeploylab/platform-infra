@@ -62,55 +62,64 @@ def notifyBackendRelease(String outcome) {
     }
 }
 
-def notifyBackendDelete(String outcome) {
-    String callbackBaseUrl = params.BACKEND_CALLBACK_URL?.trim()
-    String projectId = params.PROJECT_ID?.trim()
+def prepareUserSource() {
+    sh '''
+        set -eu
+        command -v unzip >/dev/null 2>&1 || { echo "unzip is required for ZIP_URL deployments" >&2; exit 1; }
 
-    if (!callbackBaseUrl || !projectId) {
-        echo 'Skipping backend delete callback: PROJECT_ID or BACKEND_CALLBACK_URL is missing.'
-        return
-    }
+        source_type="${SOURCE_TYPE:-ZIP_URL}"
+        zip_url="${ZIP_URL:-}"
+        tmp_dir="$(mktemp -d)"
+        trap 'rm -rf "$tmp_dir"' EXIT
 
-    String endpoint = outcome == 'complete' ? 'complete' : 'failed'
-    String callbackTokenParam = params.CALLBACK_TOKEN?.trim() ?: ''
-    String callbackUrl = "${callbackBaseUrl.replaceAll('/+$', '')}/api/v1/projects/${projectId}/delete/${endpoint}"
-    String callbackFile = ".a8s-delete-callback-${endpoint}.json"
-    Map payload = [
-        statusMessage: outcome == 'complete' ? 'Project cleanup completed successfully' : 'Jenkins project cleanup failed'
-    ]
+        if [ "$source_type" = "ZIP_FILE" ]; then
+            zip_file="${ZIP_FILE:-}"
+            if [ -n "$zip_file" ] && [ ! -f "$zip_file" ] && [ -f "$WORKSPACE/$zip_file" ]; then
+                zip_file="$WORKSPACE/$zip_file"
+            fi
+            if [ -z "$zip_file" ] && [ -f ZIP_FILE ]; then
+                zip_file="ZIP_FILE"
+            fi
+            if [ -z "$zip_file" ] || [ ! -f "$zip_file" ]; then
+                echo "ZIP_FILE is required and must point to an uploaded zip file" >&2
+                exit 1
+            fi
+            cp "$zip_file" "$tmp_dir/source.zip"
+        else
+            if [ -z "$zip_url" ]; then
+                echo "ZIP_URL is required" >&2
+                exit 1
+            fi
+            case "$zip_url" in
+              http://*|https://*) ;;
+              *)
+                echo "ZIP_URL must be an http or https URL" >&2
+                exit 1
+                ;;
+            esac
+            command -v curl >/dev/null 2>&1 || { echo "curl is required for ZIP_URL deployments" >&2; exit 1; }
+            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 "$zip_url" -o "$tmp_dir/source.zip"
+        fi
 
-    writeFile file: callbackFile, text: groovy.json.JsonOutput.toJson(payload)
-    withEnv([
-        "A8S_DELETE_CALLBACK_URL=${callbackUrl}",
-        "A8S_DELETE_CALLBACK_FILE=${callbackFile}",
-        "A8S_CALLBACK_TOKEN_PARAM=${callbackTokenParam}"
-    ]) {
-        int callbackStatus = sh(
-            script: '''
-                set +x
-                token="${A8S_JENKINS_CALLBACK_TOKEN:-}"
-                if [ -z "$token" ] && [ -n "${A8S_CALLBACK_TOKEN_PARAM:-}" ]; then
-                    token="$A8S_CALLBACK_TOKEN_PARAM"
-                fi
-                if [ -n "$token" ]; then
-                    curl -fsS -X POST "$A8S_DELETE_CALLBACK_URL" \
-                        -H 'Content-Type: application/json' \
-                        -H "X-A8S-Jenkins-Callback-Token: $token" \
-                        --data @"$A8S_DELETE_CALLBACK_FILE"
-                else
-                    curl -fsS -X POST "$A8S_DELETE_CALLBACK_URL" \
-                        -H 'Content-Type: application/json' \
-                        --data @"$A8S_DELETE_CALLBACK_FILE"
-                fi
-            ''',
-            returnStatus: true
-        )
-        if (callbackStatus != 0) {
-            echo "Backend delete callback failed with exit code ${callbackStatus} at ${callbackUrl}."
-        } else {
-            echo "Backend delete callback sent: ${endpoint}."
-        }
-    }
+        find . -mindepth 1 -maxdepth 1 ! -name "$(basename "${ZIP_FILE:-}")" -exec rm -rf {} + 2>/dev/null || true
+        if [ "$source_type" = "ZIP_FILE" ] && [ -n "${zip_file:-}" ]; then
+            rm -f "$zip_file" 2>/dev/null || true
+        fi
+        unzip -q "$tmp_dir/source.zip" -d "$tmp_dir/source"
+
+        top_count="$(find "$tmp_dir/source" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
+        top_dir="$(find "$tmp_dir/source" -mindepth 1 -maxdepth 1 -type d -print | head -n 1)"
+        if [ "$top_count" = "1" ] && [ -n "$top_dir" ]; then
+            cp -R "$top_dir"/. .
+        else
+            cp -R "$tmp_dir/source"/. .
+        fi
+
+        rm -rf .git .github .gitlab
+        find . -name '__MACOSX' -type d -prune -exec rm -rf {} + 2>/dev/null || true
+        find . -name '.DS_Store' -type f -delete 2>/dev/null || true
+    '''
+    env.APP_COMMIT_SHA = sh(script: 'find . -type f ! -path "./node_modules/*" -print0 | sort -z | xargs -0 sha256sum | sha256sum | cut -c1-12', returnStdout: true).trim()
 }
 
 pipeline {
@@ -123,9 +132,10 @@ pipeline {
     }
 
     parameters {
-        string(name: 'OPERATION', defaultValue: 'deploy', description: 'deploy or delete')
-        string(name: 'REPO_URL', defaultValue: '', description: 'Git repository URL from user (GitHub/GitLab)')
-        string(name: 'BRANCH', defaultValue: 'main', description: 'Git branch, tag, or ref to build')
+        string(name: 'OPERATION', defaultValue: 'deploy', description: 'Expected operation: deploy')
+        string(name: 'SOURCE_TYPE', defaultValue: 'ZIP_URL', description: 'ZIP_URL or ZIP_FILE')
+        string(name: 'ZIP_URL', defaultValue: '', description: 'Public or short-lived signed HTTPS ZIP URL for source deployments')
+        file(name: 'ZIP_FILE', description: 'Uploaded source ZIP for direct ZIP deployments')
         string(name: 'USER_ID', defaultValue: '', description: 'Tenant user id')
         string(name: 'WORKSPACE_ID', defaultValue: '', description: 'Workspace namespace, for example ns-username-1234abcd')
         string(name: 'CUSTOM_DOMAIN', defaultValue: '', description: 'Optional custom host (example: app.example.com)')
@@ -142,7 +152,6 @@ pipeline {
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
         string(name: 'REGISTRY_REPOSITORY', defaultValue: 'goharbor-itp.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project for pushed images')
-        string(name: 'REPO_CREDENTIALS_ID', defaultValue: '', description: 'Optional Jenkins credential id for private user repositories')
         string(name: 'SONARQUBE_SERVER_NAME', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server configuration name')
         string(name: 'SONARQUBE_SCANNER_TOOL', defaultValue: '', description: 'Optional Jenkins SonarScanner tool name')
         booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: true, description: 'Run SonarQube source analysis')
@@ -167,13 +176,25 @@ pipeline {
             steps {
                 script {
                     String operation = params.OPERATION?.trim() ?: 'deploy'
-                    if (!(operation in ['deploy', 'delete'])) {
-                        error("monolith-deploy-pipeline only supports OPERATION=deploy or OPERATION=delete, got ${operation}")
+                    if (operation != 'deploy') {
+                        error("monolith-zip-deploy-pipeline only supports OPERATION=deploy, got ${operation}")
                     }
-                    env.EFFECTIVE_OPERATION = operation
-                    boolean deleteMode = operation == 'delete'
-                    if (!deleteMode && !params.REPO_URL?.trim()) {
-                        error('REPO_URL is required')
+                    String sourceType = params.SOURCE_TYPE?.trim()?.toUpperCase()?.replace('-', '_') ?: 'ZIP_URL'
+                    if (sourceType == 'ZIP') {
+                        sourceType = 'ZIP_URL'
+                    }
+                    if (!(sourceType in ['ZIP_URL', 'ZIP_FILE'])) {
+                        error("SOURCE_TYPE must be ZIP_URL or ZIP_FILE, got ${sourceType}")
+                    }
+                    env.SOURCE_TYPE_NORMALIZED = sourceType
+                    String zipUrl = params.ZIP_URL?.trim()
+                    if (sourceType == 'ZIP_URL') {
+                        if (!zipUrl) {
+                            error('ZIP_URL is required')
+                        }
+                        if (!(zipUrl ==~ /^https?:\\/\\/.+/)) {
+                            error('ZIP_URL must be an http or https URL')
+                        }
                     }
                     if (!params.USER_ID?.trim()) {
                         error('USER_ID is required')
@@ -186,10 +207,10 @@ pipeline {
                     if (!env.EFFECTIVE_PROJECT_NAME) {
                         error('PROJECT_NAME (or APP_NAME) is required')
                     }
-                    if (!deleteMode && !(params.APP_PORT ==~ /^\d+$/)) {
+                    if (!(params.APP_PORT ==~ /^\d+$/)) {
                         error('APP_PORT must be numeric')
                     }
-                    if (!deleteMode && !(params.TRIVY_GATE_EXIT_CODE ==~ /^\d+$/)) {
+                    if (!(params.TRIVY_GATE_EXIT_CODE ==~ /^\d+$/)) {
                         error('TRIVY_GATE_EXIT_CODE must be numeric, normally 0 or 1')
                     }
 
@@ -214,12 +235,7 @@ pipeline {
                     }
                     env.EFFECTIVE_REGISTRY_REPOSITORY = normalizedRegistry
 
-                    env.NORMALIZED_REGISTRY_REPOSITORY = env.EFFECTIVE_REGISTRY_REPOSITORY
-                    env.REGISTRY_LOGIN_SERVER = env.EFFECTIVE_REGISTRY_REPOSITORY.split('/')[0]
-                    env.IMAGE_REPOSITORY = "${env.NORMALIZED_REGISTRY_REPOSITORY}/${env.SAFE_USER_ID}/${env.SAFE_PROJECT_NAME}"
-                    env.IMAGE_FULL = deleteMode ? "(delete ${env.IMAGE_REPOSITORY})" : ''
-
-                    echo "OPERATION=${env.EFFECTIVE_OPERATION} | ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID}"
+                    echo "OPERATION=deploy | SOURCE_TYPE=${env.SOURCE_TYPE_NORMALIZED} | ENABLE_GITOPS_UPDATE=${params.ENABLE_GITOPS_UPDATE} | GITOPS_BRANCH=${params.GITOPS_BRANCH} | WORKSPACE_ID=${env.EFFECTIVE_WORKSPACE_ID}"
                 }
             }
         }
@@ -237,36 +253,12 @@ pipeline {
         }
 
         stage('Checkout user repository') {
-            when {
-                expression { return env.EFFECTIVE_OPERATION != 'delete' }
-            }
             steps {
                 dir('user-app') {
                     script {
                         deleteDir()
-                        env.NORMALIZED_REPO_URL = params.REPO_URL
-                        if (params.REPO_URL?.contains('%')) {
-                            try {
-                                env.NORMALIZED_REPO_URL = java.net.URLDecoder.decode(params.REPO_URL, 'UTF-8')
-                            } catch (Exception ignored) {
-                                echo 'Could not decode REPO_URL, using original value.'
-                            }
-                        }
+                        prepareUserSource()
 
-                        if (params.REPO_CREDENTIALS_ID?.trim()) {
-                            checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: "*/${params.BRANCH}"]],
-                                userRemoteConfigs: [[
-                                    url: env.NORMALIZED_REPO_URL,
-                                    credentialsId: params.REPO_CREDENTIALS_ID
-                                ]]
-                            ])
-                        } else {
-                            git url: env.NORMALIZED_REPO_URL, branch: params.BRANCH
-                        }
-
-                        env.APP_COMMIT_SHA = sh(script: 'git rev-parse --short=12 HEAD', returnStdout: true).trim()
                         env.NORMALIZED_REGISTRY_REPOSITORY = env.EFFECTIVE_REGISTRY_REPOSITORY
                         env.IMAGE_TAG = params.IMAGE_TAG?.trim() ?: "${env.SAFE_USER_ID}-${env.BUILD_NUMBER}-${env.APP_COMMIT_SHA}"
                         env.IMAGE_REPOSITORY = "${env.NORMALIZED_REGISTRY_REPOSITORY}/${env.SAFE_USER_ID}/${env.SAFE_PROJECT_NAME}"
@@ -280,9 +272,6 @@ pipeline {
         }
 
         stage('Detect framework') {
-            when {
-                expression { return env.EFFECTIVE_OPERATION != 'delete' }
-            }
             steps {
                 dir('user-app') {
                     script {
@@ -314,7 +303,7 @@ pipeline {
 
         stage('SonarQube Analysis') {
             when {
-                expression { return env.EFFECTIVE_OPERATION != 'delete' && params.ENABLE_SONARQUBE_SCAN }
+                expression { return params.ENABLE_SONARQUBE_SCAN }
             }
             steps {
                 dir('user-app') {
@@ -335,7 +324,7 @@ pipeline {
 
         stage('SonarQube Quality Gate') {
             when {
-                expression { return env.EFFECTIVE_OPERATION != 'delete' && params.ENABLE_SONARQUBE_SCAN && params.ENABLE_SONARQUBE_QUALITY_GATE }
+                expression { return params.ENABLE_SONARQUBE_SCAN && params.ENABLE_SONARQUBE_QUALITY_GATE }
             }
             steps {
                 a8sSonarQualityGate(timeoutMinutes: 5, abortPipeline: true)
@@ -343,9 +332,6 @@ pipeline {
         }
 
         stage('Prepare Dockerfile') {
-            when {
-                expression { return env.EFFECTIVE_OPERATION != 'delete' }
-            }
             steps {
                 dir('user-app') {
                     sh '''
@@ -382,9 +368,6 @@ pipeline {
         }
 
         stage('Build, Scan, Push') {
-            when {
-                expression { return env.EFFECTIVE_OPERATION != 'delete' }
-            }
             agent { label 'istad' }
             steps {
                 script {
@@ -398,18 +381,7 @@ pipeline {
 
                     dir('user-app') {
                         deleteDir()
-                        if (params.REPO_CREDENTIALS_ID?.trim()) {
-                            checkout([
-                                $class: 'GitSCM',
-                                branches: [[name: "*/${params.BRANCH}"]],
-                                userRemoteConfigs: [[
-                                    url: env.NORMALIZED_REPO_URL,
-                                    credentialsId: params.REPO_CREDENTIALS_ID
-                                ]]
-                            ])
-                        } else {
-                            git url: env.NORMALIZED_REPO_URL, branch: params.BRANCH
-                        }
+                        prepareUserSource()
 
                         sh '''
                             SCRIPTS_DIR=""
@@ -580,7 +552,7 @@ TRIVY_RUNNER
                         fi
 
                         bash "${SCRIPTS_DIR}/update-gitops.sh" \
-                            --operation "${EFFECTIVE_OPERATION}" \
+                            --operation deploy \
                             --gitops-repo "${GITOPS_REPO_URL}" \
                             --gitops-branch "${GITOPS_BRANCH}" \
                             --ssh-key "${SSH_KEY}" \
@@ -601,65 +573,23 @@ TRIVY_RUNNER
                 }
             }
         }
-
-        stage('Delete Harbor repository') {
-            when {
-                expression { return env.EFFECTIVE_OPERATION == 'delete' }
-            }
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'registry-credentials',
-                    usernameVariable: 'REGISTRY_USERNAME',
-                    passwordVariable: 'REGISTRY_PASSWORD'
-                )]) {
-                    sh '''
-                        set -eu
-                        HARBOR_HOST="${REGISTRY_LOGIN_SERVER}"
-                        HARBOR_PROJECT="${NORMALIZED_REGISTRY_REPOSITORY#*/}"
-                        HARBOR_REPOSITORY="${SAFE_USER_ID}/${SAFE_PROJECT_NAME}"
-                        ENCODED_REPOSITORY="${SAFE_USER_ID}%252F${SAFE_PROJECT_NAME}"
-                        URL="https://${HARBOR_HOST}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${ENCODED_REPOSITORY}"
-                        echo "[harbor] Deleting repository ${HARBOR_PROJECT}/${HARBOR_REPOSITORY}"
-                        HTTP_CODE="$(curl -sS -o /tmp/a8s-harbor-delete.out -w '%{http_code}' \
-                            -u "${REGISTRY_USERNAME}:${REGISTRY_PASSWORD}" \
-                            -X DELETE "${URL}")"
-                        if [ "${HTTP_CODE}" = "200" ] || [ "${HTTP_CODE}" = "202" ] || [ "${HTTP_CODE}" = "204" ] || [ "${HTTP_CODE}" = "404" ]; then
-                            echo "[harbor] Delete accepted with HTTP ${HTTP_CODE}"
-                            exit 0
-                        fi
-                        echo "[harbor] Delete failed with HTTP ${HTTP_CODE}"
-                        cat /tmp/a8s-harbor-delete.out || true
-                        exit 1
-                    '''
-                }
-            }
-        }
     }
 
     post {
         success {
             script {
-                if (env.EFFECTIVE_OPERATION == 'delete') {
-                    echo "Project removal completed for ${env.EFFECTIVE_PROJECT_NAME}."
-                    notifyBackendDelete('complete')
-                } else {
-                    echo "Deployment requested successfully for ${env.EFFECTIVE_PROJECT_NAME}."
-                    echo "Image: ${env.IMAGE_FULL}"
-                    String customDomain = params.CUSTOM_DOMAIN?.trim()
-                    String expectedHost = customDomain ?: "${env.SAFE_PROJECT_NAME}-${env.SAFE_WORKSPACE_ID}.${params.PLATFORM_DOMAIN}"
-                    echo "Expected URL: https://${expectedHost}"
-                    notifyBackendRelease('complete')
-                }
+                echo "Deployment requested successfully for ${env.EFFECTIVE_PROJECT_NAME}."
+                echo "Image: ${env.IMAGE_FULL}"
+                String customDomain = params.CUSTOM_DOMAIN?.trim()
+                String expectedHost = customDomain ?: "${env.SAFE_PROJECT_NAME}-${env.SAFE_WORKSPACE_ID}.${params.PLATFORM_DOMAIN}"
+                echo "Expected URL: https://${expectedHost}"
+                notifyBackendRelease('complete')
             }
         }
         failure {
             echo 'Deployment failed. Check stage logs for details.'
             script {
-                if (env.EFFECTIVE_OPERATION == 'delete') {
-                    notifyBackendDelete('failed')
-                } else {
-                    notifyBackendRelease('failed')
-                }
+                notifyBackendRelease('failed')
             }
         }
         always {

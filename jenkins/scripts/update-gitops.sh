@@ -8,7 +8,7 @@ Usage: update-gitops.sh \
   --gitops-repo <ssh-url> \
   --gitops-branch <branch> \
   --ssh-key <path> \
-  --operation <deploy|rollback> \
+  --operation <deploy|rollback|delete> \
   --workspace-id <workspace-namespace> \
   --user-id <user-id> \
   --project-name <project-name> \
@@ -423,7 +423,7 @@ commit_and_push() {
     git config user.email "jenkins@platform.local"
     git config user.name "Jenkins CI"
 
-    git add "${project_path}" "${namespace_file}"
+    git add -A apps
 
     if git diff --cached --quiet; then
       echo "${no_change_message}"
@@ -546,7 +546,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${DOMAIN_ONLY}" == "true" ]]; then
+if [[ "${OPERATION}" == "delete" ]]; then
+  for required in GITOPS_REPO SSH_KEY WORKSPACE_ID USER_ID PROJECT_NAME; do
+    if [[ -z "${!required}" ]]; then
+      echo "Missing required argument: ${required}" >&2
+      usage
+      exit 1
+    fi
+  done
+elif [[ "${DOMAIN_ONLY}" == "true" ]]; then
   for required in GITOPS_REPO SSH_KEY WORKSPACE_ID USER_ID PROJECT_NAME PLATFORM_DOMAIN; do
     if [[ -z "${!required}" ]]; then
       echo "Missing required argument: ${required}" >&2
@@ -657,11 +665,24 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
   PROJECT_DIR="${REPO_DIR}/${APP_ROOT}"
   VALUES_FILE="${PROJECT_DIR}/values.yaml"
 
-  mkdir -p "${PROJECT_DIR}" "${REPO_DIR}/${USER_ROOT}"
+  if [[ "${OPERATION}" == "delete" ]]; then
+    echo "[GitOps] Delete operation: removing ${APP_ROOT}"
+    if [[ -d "${PROJECT_DIR}" ]]; then
+      rm -rf "${PROJECT_DIR}"
+    fi
 
-  ensure_namespace_manifest "${REPO_DIR}/${USER_ROOT}" "${NAMESPACE}"
+    if [[ -d "${REPO_DIR}/${USER_ROOT}" ]] && ! find "${REPO_DIR}/${USER_ROOT}" -mindepth 1 -maxdepth 1 | grep -q .; then
+      rm -rf "${REPO_DIR}/${USER_ROOT}"
+    fi
+  else
+    mkdir -p "${PROJECT_DIR}" "${REPO_DIR}/${USER_ROOT}"
 
-  if [[ "${DOMAIN_ONLY}" == "true" ]]; then
+    ensure_namespace_manifest "${REPO_DIR}/${USER_ROOT}" "${NAMESPACE}"
+  fi
+
+  if [[ "${OPERATION}" == "delete" ]]; then
+    :
+  elif [[ "${DOMAIN_ONLY}" == "true" ]]; then
     if [[ ! -f "${VALUES_FILE}" ]]; then
       echo "Cannot apply domain-only update because values file does not exist yet: ${VALUES_FILE}" >&2
       echo "Run a full deployment once before using domain-only updates." >&2
@@ -693,14 +714,19 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
     create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}" "${ENV_JSON}"
   fi
 
-  force_https_ingress "${VALUES_FILE}" || {
-    echo "Unable to force HTTPS ingress mode in ${VALUES_FILE}." >&2
-    exit 1
-  }
+  if [[ "${OPERATION}" != "delete" ]]; then
+    force_https_ingress "${VALUES_FILE}" || {
+      echo "Unable to force HTTPS ingress mode in ${VALUES_FILE}." >&2
+      exit 1
+    }
+  fi
 
   if [[ "${DOMAIN_ONLY}" == "true" ]]; then
     COMMIT_MESSAGE="domain(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): host=${EFFECTIVE_HOST}"
     NO_CHANGE_MESSAGE="No GitOps changes required. Domain host already set to ${EFFECTIVE_HOST}."
+  elif [[ "${OPERATION}" == "delete" ]]; then
+    COMMIT_MESSAGE="delete(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): remove monolith resources"
+    NO_CHANGE_MESSAGE="No GitOps changes required. Project resources were already absent."
   elif [[ "${OPERATION}" == "rollback" ]]; then
     COMMIT_MESSAGE="rollback(${SAFE_USER_ID}/${SAFE_PROJECT_NAME}): image=${IMAGE_REPOSITORY}:${IMAGE_TAG} build=${BUILD_NUMBER} sha=${COMMIT_SHA}"
     NO_CHANGE_MESSAGE="No GitOps changes required. Requested image tag already present."

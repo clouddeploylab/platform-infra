@@ -27,7 +27,7 @@ pipeline {
         string(name: 'REGISTRY_USERNAME', defaultValue: '', description: 'Optional registry username when no Jenkins credential id is used')
         password(name: 'REGISTRY_PASSWORD', defaultValue: '', description: 'Optional registry password/token when no Jenkins credential id is used')
         booleanParam(name: 'PUSH_TEMP_IMAGE', defaultValue: false, description: 'Push GIT_BUILD temp image to registry before scan')
-        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'gohabor.anajak-khmer.site/scan-temp', description: 'Registry/project for temp images')
+        string(name: 'REGISTRY_REPOSITORY', defaultValue: 'goharbor-itp.anajak-khmer.site/scan-temp', description: 'Registry/project for temp images')
 
         string(name: 'TRIVY_SEVERITY', defaultValue: 'UNKNOWN,LOW,MEDIUM,HIGH,CRITICAL', description: 'Trivy severities to include')
         string(name: 'TRIVY_EXIT_CODE', defaultValue: '0', description: '0 reports only, 1 fails build when vulnerabilities match severity')
