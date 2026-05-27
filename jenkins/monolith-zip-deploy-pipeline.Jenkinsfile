@@ -66,45 +66,45 @@ def prepareUserSource() {
     sh '''
         set -eu
         command -v unzip >/dev/null 2>&1 || { echo "unzip is required for ZIP_URL deployments" >&2; exit 1; }
+        command -v curl >/dev/null 2>&1 || { echo "curl is required for ZIP_URL deployments" >&2; exit 1; }
 
         source_type="${SOURCE_TYPE:-ZIP_URL}"
         zip_url="${ZIP_URL:-}"
         tmp_dir="$(mktemp -d)"
         trap 'rm -rf "$tmp_dir"' EXIT
 
-        if [ "$source_type" = "ZIP_FILE" ]; then
-            zip_file="${ZIP_FILE:-}"
-            if [ -n "$zip_file" ] && [ ! -f "$zip_file" ] && [ -f "$WORKSPACE/$zip_file" ]; then
-                zip_file="$WORKSPACE/$zip_file"
-            fi
-            if [ -z "$zip_file" ] && [ -f ZIP_FILE ]; then
-                zip_file="ZIP_FILE"
-            fi
-            if [ -z "$zip_file" ] || [ ! -f "$zip_file" ]; then
-                echo "ZIP_FILE is required and must point to an uploaded zip file" >&2
-                exit 1
-            fi
-            cp "$zip_file" "$tmp_dir/source.zip"
-        else
-            if [ -z "$zip_url" ]; then
-                echo "ZIP_URL is required" >&2
-                exit 1
-            fi
-            case "$zip_url" in
-              http://*|https://*) ;;
-              *)
-                echo "ZIP_URL must be an http or https URL" >&2
-                exit 1
-                ;;
-            esac
-            command -v curl >/dev/null 2>&1 || { echo "curl is required for ZIP_URL deployments" >&2; exit 1; }
-            curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 "$zip_url" -o "$tmp_dir/source.zip"
+        if [ "$source_type" != "ZIP_URL" ]; then
+            echo "SOURCE_TYPE must be ZIP_URL for this pipeline. Uploaded ZIPs are stored by the backend and passed as ZIP_URL." >&2
+            exit 1
         fi
+        if [ -z "$zip_url" ]; then
+            echo "ZIP_URL is required" >&2
+            exit 1
+        fi
+        case "$zip_url" in
+          http://*|https://*) ;;
+          *)
+            echo "ZIP_URL must be an http or https URL" >&2
+            exit 1
+            ;;
+        esac
 
-        find . -mindepth 1 -maxdepth 1 ! -name "$(basename "${ZIP_FILE:-}")" -exec rm -rf {} + 2>/dev/null || true
-        if [ "$source_type" = "ZIP_FILE" ] && [ -n "${zip_file:-}" ]; then
-            rm -f "$zip_file" 2>/dev/null || true
+        token="${A8S_JENKINS_CALLBACK_TOKEN:-}"
+        if [ -z "$token" ] && [ -n "${CALLBACK_TOKEN:-}" ]; then
+            token="$CALLBACK_TOKEN"
         fi
+        token="$(printf '%s' "$token" | tr -d '\r\n')"
+        if [ -z "$token" ]; then
+            echo "Callback token is missing. Set Jenkins credential a8s-jenkins-callback-token or pass CALLBACK_TOKEN." >&2
+            exit 1
+        fi
+        echo "Using callback token from Jenkins env/params (length: $(printf '%s' "$token" | wc -c | tr -d ' '))."
+        curl -fL --retry 3 --retry-delay 2 --connect-timeout 15 --max-time 300 \
+            -H "X-Source-Archive-Token: $token" \
+            -H "Authorization: Bearer $token" \
+            "$zip_url" -o "$tmp_dir/source.zip"
+
+        find . -mindepth 1 -maxdepth 1 -exec rm -rf {} + 2>/dev/null || true
         unzip -q "$tmp_dir/source.zip" -d "$tmp_dir/source"
 
         top_count="$(find "$tmp_dir/source" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
@@ -133,9 +133,8 @@ pipeline {
 
     parameters {
         string(name: 'OPERATION', defaultValue: 'deploy', description: 'Expected operation: deploy')
-        string(name: 'SOURCE_TYPE', defaultValue: 'ZIP_URL', description: 'ZIP_URL or ZIP_FILE')
-        string(name: 'ZIP_URL', defaultValue: '', description: 'Public or short-lived signed HTTPS ZIP URL for source deployments')
-        file(name: 'ZIP_FILE', description: 'Uploaded source ZIP for direct ZIP deployments')
+        string(name: 'SOURCE_TYPE', defaultValue: 'ZIP_URL', description: 'ZIP_URL')
+        string(name: 'ZIP_URL', defaultValue: '', description: 'Public, short-lived, or backend-protected HTTPS ZIP URL for source deployments')
         string(name: 'USER_ID', defaultValue: '', description: 'Tenant user id')
         string(name: 'WORKSPACE_ID', defaultValue: '', description: 'Workspace namespace, for example ns-username-1234abcd')
         string(name: 'CUSTOM_DOMAIN', defaultValue: '', description: 'Optional custom host (example: app.example.com)')
@@ -154,8 +153,8 @@ pipeline {
         string(name: 'REGISTRY_REPOSITORY', defaultValue: 'goharbor-itp.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project for pushed images')
         string(name: 'SONARQUBE_SERVER_NAME', defaultValue: 'sonarqube', description: 'Jenkins SonarQube server configuration name')
         string(name: 'SONARQUBE_SCANNER_TOOL', defaultValue: '', description: 'Optional Jenkins SonarScanner tool name')
-        booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: true, description: 'Run SonarQube source analysis')
-        booleanParam(name: 'ENABLE_SONARQUBE_QUALITY_GATE', defaultValue: true, description: 'Wait for SonarQube quality gate before build')
+        booleanParam(name: 'ENABLE_SONARQUBE_SCAN', defaultValue: false, description: 'Run SonarQube source analysis')
+        booleanParam(name: 'ENABLE_SONARQUBE_QUALITY_GATE', defaultValue: false, description: 'Wait for SonarQube quality gate before build')
         booleanParam(name: 'ENABLE_TRIVY_SCAN', defaultValue: true, description: 'Run local Trivy image scan')
         string(name: 'TRIVY_BIN', defaultValue: 'trivy', description: 'Trivy executable name or absolute path on the Jenkins agent')
         string(name: 'TRIVY_REPORT_SEVERITY', defaultValue: 'HIGH,CRITICAL', description: 'Severities included in Trivy report artifacts')
@@ -183,12 +182,15 @@ pipeline {
                     if (operation != 'deploy') {
                         error("monolith-zip-deploy-pipeline only supports OPERATION=deploy, got ${operation}")
                     }
-                    String sourceType = params.SOURCE_TYPE?.trim()?.toUpperCase()?.replace('-', '_') ?: 'ZIP_URL'
-                    if (sourceType == 'ZIP') {
+                    String requestedSourceType = params.SOURCE_TYPE?.trim()
+                    String sourceType = requestedSourceType
+                        ? requestedSourceType.toUpperCase().replace('-', '_')
+                        : 'ZIP_URL'
+                    if (sourceType == 'ZIP' || sourceType == 'UPLOAD' || sourceType == 'ZIP_FILE') {
                         sourceType = 'ZIP_URL'
                     }
-                    if (!(sourceType in ['ZIP_URL', 'ZIP_FILE'])) {
-                        error("SOURCE_TYPE must be ZIP_URL or ZIP_FILE, got ${sourceType}")
+                    if (sourceType != 'ZIP_URL') {
+                        error("SOURCE_TYPE must be ZIP_URL, got ${sourceType}")
                     }
                     env.SOURCE_TYPE_NORMALIZED = sourceType
                     String zipUrl = params.ZIP_URL?.trim()
