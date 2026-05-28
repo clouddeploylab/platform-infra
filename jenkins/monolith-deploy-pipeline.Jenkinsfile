@@ -1,6 +1,6 @@
 @Library(['share_lib@master', 'a8s-sonarqube@main']) _
 
-def notifyBackendRelease(String outcome) {
+def notifyBackendRelease(String outcome, String statusMessageOverride = null) {
     String callbackBaseUrl = params.BACKEND_CALLBACK_URL?.trim()
     String projectId = params.PROJECT_ID?.trim()
     String releaseId = params.RELEASE_ID?.trim()
@@ -22,10 +22,13 @@ def notifyBackendRelease(String outcome) {
     String callbackTokenParam = params.CALLBACK_TOKEN?.trim() ?: ''
     String callbackUrl = "${callbackBaseUrl.replaceAll('/+$', '')}/api/v1/projects/${projectId}/releases/${releaseId}/${endpoint}"
     String callbackFile = ".a8s-release-callback-${endpoint}.json"
+    String resolvedStatusMessage = outcome == 'complete'
+        ? 'Deployment completed successfully'
+        : (statusMessageOverride?.trim() ?: 'Jenkins pipeline failed')
     Map payload = [
         buildNumber: buildNumber,
         framework: framework,
-        statusMessage: outcome == 'complete' ? 'Deployment completed successfully' : 'Jenkins pipeline failed'
+        statusMessage: resolvedStatusMessage
     ]
 
     writeFile file: callbackFile, text: groovy.json.JsonOutput.toJson(payload)
@@ -553,6 +556,38 @@ TRIVY_RUNNER
                         } else {
                             echo "[scan] DefectDojo upload disabled for monolithic deploy scan."
                         }
+                        String trivyFailureSummary = sh(
+                            script: '''
+                                set -eu
+                                if [ ! -f trivy-reports/trivy-report.txt ]; then
+                                    printf '0|'
+                                    exit 0
+                                fi
+
+                                CRITICAL_COUNT="$(sed -nE 's/^Total:[[:space:]]+[0-9]+[[:space:]]+\\(CRITICAL:[[:space:]]*([0-9]+)\\).*/\\1/p' trivy-reports/trivy-report.txt | head -n1)"
+                                if [ -z "${CRITICAL_COUNT}" ]; then
+                                    CRITICAL_COUNT="0"
+                                fi
+
+                                CVE_LIST="$(grep -Eo 'CVE-[0-9]{4}-[0-9]+' trivy-reports/trivy-report.txt | sort -u | head -n 3 | tr '\\n' ',' | sed 's/,$//')"
+                                printf '%s|%s' "${CRITICAL_COUNT}" "${CVE_LIST}"
+                            ''',
+                            returnStdout: true
+                        ).trim()
+
+                        String[] trivyParts = trivyFailureSummary.split('\\|', 2)
+                        int trivyCriticalCount = 0
+                        try {
+                            trivyCriticalCount = trivyParts[0]?.trim() ? trivyParts[0].trim().toInteger() : 0
+                        } catch (Exception ignored) {
+                            trivyCriticalCount = 0
+                        }
+                        if (trivyCriticalCount > 0) {
+                            String vulnerabilityWord = trivyCriticalCount == 1 ? 'vulnerability' : 'vulnerabilities'
+                            String cveList = trivyParts.length > 1 ? trivyParts[1].trim() : ''
+                            String cveSuffix = cveList ? " (${cveList})" : ''
+                            env.DEPLOY_FAILURE_REASON = "Deployment blocked by Trivy security gate: ${trivyCriticalCount} CRITICAL ${vulnerabilityWord} detected${cveSuffix}."
+                        }
                         sh '''
                             set -eu
                             TRIVY_GATE_SEVERITY_VALUE="${TRIVY_GATE_SEVERITY:-CRITICAL}"
@@ -684,7 +719,7 @@ TRIVY_RUNNER
                 if (env.EFFECTIVE_OPERATION == 'delete') {
                     notifyBackendDelete('failed')
                 } else {
-                    notifyBackendRelease('failed')
+                    notifyBackendRelease('failed', env.DEPLOY_FAILURE_REASON)
                 }
             }
         }
