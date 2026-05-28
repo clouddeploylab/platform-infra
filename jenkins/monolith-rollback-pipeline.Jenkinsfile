@@ -82,6 +82,7 @@ pipeline {
         string(name: 'BACKEND_CALLBACK_URL', defaultValue: '', description: 'A8S backend public base URL for release callback')
         string(name: 'CALLBACK_TOKEN', defaultValue: '', description: 'Legacy fallback only. Jenkins normally uses credential a8s-jenkins-callback-token.')
         text(name: 'ENV_JSON', defaultValue: '[]', description: 'Runtime env vars saved on selected release')
+        string(name: 'VAULT_ENV_PATH', defaultValue: '', description: 'Vault KV path for project secret env values')
         string(name: 'PLATFORM_DOMAIN', defaultValue: 'apps.example.com', description: 'Wildcard platform domain')
         string(name: 'GITOPS_BRANCH', defaultValue: 'main', description: 'GitOps branch to update')
         string(name: 'REGISTRY_REPOSITORY', defaultValue: 'goharbor-itp.anajak-khmer.site/deployment-pipeline', description: 'Harbor host/project that stores release images')
@@ -202,6 +203,7 @@ pipeline {
                             --image-tag "${IMAGE_TAG}" \
                             --app-port "${APP_PORT}" \
                             --env-json "${ENV_JSON}" \
+                            --vault-env-path "${VAULT_ENV_PATH}" \
                             --platform-domain "${PLATFORM_DOMAIN}" \
                             --framework "${FRAMEWORK}" \
                             --commit-sha "${APP_COMMIT_SHA}" \

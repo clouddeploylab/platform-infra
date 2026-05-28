@@ -14,6 +14,7 @@ Usage: update-gitops.sh \
   --project-name <project-name> \
   --custom-domain <domain> \
   --env-json <json> \
+  --vault-env-path <vault-kv-path> \
   --image-repository <repository> \
   --image-tag <tag> \
   --app-port <port> \
@@ -289,6 +290,7 @@ create_values_file() {
   local domain="${10}"
   local custom_domain="${11}"
   local env_json="${12}"
+  local vault_env_path="${13}"
   local effective_app_port
   local probe_mode
   local startup_probe_enabled
@@ -355,6 +357,12 @@ imagePullSecrets:
 
 envJson: |
 $(indent_block_scalar "${env_json}" 2)
+
+vault:
+  enabled: $([[ -n "${vault_env_path}" ]] && echo "true" || echo "false")
+  secretStoreName: "vault-backend"
+  secretStoreKind: "ClusterSecretStore"
+  envPath: "${vault_env_path}"
 
 probes:
   mode: "${probe_mode}"
@@ -458,6 +466,7 @@ BUILD_NUMBER=""
 CHART_SOURCE=""
 CUSTOM_DOMAIN=""
 ENV_JSON="[]"
+VAULT_ENV_PATH=""
 DOMAIN_ONLY="false"
 
 while [[ $# -gt 0 ]]; do
@@ -496,6 +505,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --env-json)
       ENV_JSON="$2"
+      shift 2
+      ;;
+    --vault-env-path)
+      VAULT_ENV_PATH="$2"
       shift 2
       ;;
     --image-repository)
@@ -711,7 +724,7 @@ while [[ "${ATTEMPT}" -le "${MAX_ATTEMPTS}" ]]; do
       cp -R "${CHART_SOURCE}/." "${PROJECT_DIR}/"
     fi
 
-    create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}" "${ENV_JSON}"
+    create_values_file "${VALUES_FILE}" "${SAFE_WORKSPACE_ID}" "${SAFE_USER_ID}" "${SAFE_PROJECT_NAME}" "${NAMESPACE}" "${FRAMEWORK}" "${IMAGE_REPOSITORY}" "${IMAGE_TAG}" "${APP_PORT}" "${PLATFORM_DOMAIN}" "${CUSTOM_DOMAIN}" "${ENV_JSON}" "${VAULT_ENV_PATH}"
   fi
 
   if [[ "${OPERATION}" != "delete" ]]; then

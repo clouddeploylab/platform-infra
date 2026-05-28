@@ -66,6 +66,11 @@ env: []
 # Env entries support { name, value, secret }. secret=true renders a Kubernetes
 # Secret and injects the variable with valueFrom.secretKeyRef.
 envJson: ""
+vault:
+  enabled: false
+  secretStoreName: "vault-backend"
+  secretStoreKind: "ClusterSecretStore"
+  envPath: ""
 nodeSelector: {}
 tolerations: []
 affinity: {}
