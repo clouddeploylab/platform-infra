@@ -345,7 +345,7 @@ pipeline {
             when {
                 expression { return !params.DOMAIN_ONLY_UPDATE }
             }
-            agent { label 'istad' }
+            agent { label 'built-in || master' }
             steps {
                 script {
                     // Re-checkout infra (for scripts + helm chart)

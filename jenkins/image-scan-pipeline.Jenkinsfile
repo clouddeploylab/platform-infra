@@ -1,5 +1,5 @@
 pipeline {
-    agent { label 'istad' }
+    agent { label 'built-in || master' }
 
     options {
         timeout(time: 30, unit: 'MINUTES')

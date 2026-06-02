@@ -375,7 +375,7 @@ pipeline {
         }
 
         stage('Build, Scan, Push') {
-            agent { label 'istad' }
+            agent { label 'built-in || master' }
             steps {
                 script {
                     dir('platform-infra') {

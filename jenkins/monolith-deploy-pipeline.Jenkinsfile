@@ -393,7 +393,7 @@ pipeline {
             when {
                 expression { return env.EFFECTIVE_OPERATION != 'delete' }
             }
-            agent { label 'istad' }
+            agent { label 'built-in || master' }
             steps {
                 script {
                     dir('platform-infra') {
