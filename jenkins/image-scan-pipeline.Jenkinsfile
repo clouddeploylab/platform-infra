@@ -214,8 +214,27 @@ EOF
                     sh '''
                         set -eu
                         if [ ! -f "$DOCKERFILE_PATH" ]; then
-                            echo "Dockerfile not found: $DOCKERFILE_PATH"
-                            exit 1
+                            if [ "$DOCKERFILE_PATH" != "Dockerfile" ]; then
+                                echo "Dockerfile not found: $DOCKERFILE_PATH"
+                                exit 1
+                            fi
+
+                            SCRIPTS_DIR=""
+                            for d in "$WORKSPACE/jenkins/scripts" "$WORKSPACE/platform-infra/jenkins/scripts" "$WORKSPACE/plateform-infra/jenkins/scripts"; do
+                                if [ -f "$d/generate-dockerfile.sh" ] && [ -f "$d/detect-framework.sh" ]; then
+                                    SCRIPTS_DIR="$d"
+                                    break
+                                fi
+                            done
+                            if [ -z "$SCRIPTS_DIR" ]; then
+                                echo "ERROR: platform Dockerfile scripts not found in expected infra directories."
+                                ls -la "$WORKSPACE" || true
+                                exit 1
+                            fi
+
+                            FRAMEWORK="$(bash "$SCRIPTS_DIR/detect-framework.sh")"
+                            echo "[build] Dockerfile not found. Detected framework: ${FRAMEWORK}"
+                            bash "$SCRIPTS_DIR/generate-dockerfile.sh" "$FRAMEWORK" "$SCRIPTS_DIR"
                         fi
                         if [ ! -d "$BUILD_CONTEXT" ]; then
                             echo "Build context not found: $BUILD_CONTEXT"
@@ -474,7 +493,7 @@ EOF
                 set +e
                 docker logout "$(echo "${SCAN_IMAGE_REF:-}" | cut -d/ -f1)" >/dev/null 2>&1
                 if [ "${SCAN_MODE}" = "GIT_BUILD" ] && [ "${PUSH_TEMP_IMAGE}" != "true" ] && [ -n "${SCAN_IMAGE_REF:-}" ]; then
-                    docker image rm "$SCAN_IMAGE_REF" >/dev/null 2>&1
+                    docker image rm "$SCAN_IMAGE_REF" >/dev/null 2>&1 || true
                 fi
             '''
             cleanWs()
