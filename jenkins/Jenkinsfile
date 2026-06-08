@@ -61,7 +61,7 @@ def notifyBackendRelease(String outcome) {
 }
 
 pipeline {
-    agent { label 'built-in || master' }
+    agent { label 'istad' }
 
     options {
         timeout(time: 20, unit: 'MINUTES')
@@ -345,7 +345,7 @@ pipeline {
             when {
                 expression { return !params.DOMAIN_ONLY_UPDATE }
             }
-            agent { label 'built-in || master' }
+            agent { label 'istad' }
             steps {
                 script {
                     // Re-checkout infra (for scripts + helm chart)

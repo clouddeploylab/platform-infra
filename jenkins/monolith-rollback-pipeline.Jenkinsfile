@@ -57,7 +57,7 @@ def notifyBackendRelease(String outcome) {
 }
 
 pipeline {
-    agent { label 'built-in || master' }
+    agent { label 'istad' }
 
     options {
         timeout(time: 10, unit: 'MINUTES')

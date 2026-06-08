@@ -123,7 +123,7 @@ def prepareUserSource() {
 }
 
 pipeline {
-    agent { label 'built-in || master' }
+    agent { label 'istad' }
 
     options {
         timeout(time: 20, unit: 'MINUTES')
@@ -375,7 +375,7 @@ pipeline {
         }
 
         stage('Build, Scan, Push') {
-            agent { label 'built-in || master' }
+            agent { label 'istad' }
             steps {
                 script {
                     dir('platform-infra') {

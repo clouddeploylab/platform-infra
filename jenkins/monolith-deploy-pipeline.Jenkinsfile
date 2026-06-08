@@ -117,7 +117,7 @@ def notifyBackendDelete(String outcome) {
 }
 
 pipeline {
-    agent { label 'built-in || master' }
+    agent { label 'istad' }
 
     options {
         timeout(time: 20, unit: 'MINUTES')
@@ -393,7 +393,7 @@ pipeline {
             when {
                 expression { return env.EFFECTIVE_OPERATION != 'delete' }
             }
-            agent { label 'built-in || master' }
+            agent { label 'istad' }
             steps {
                 script {
                     dir('platform-infra') {
